@@ -23,16 +23,17 @@ root@mycontainer:/#
 ## Install
 
 ```console
-$ uv tool install git+https://github.com/ryantenney/synodock
-$ # or run it without installing:
-$ uvx --from git+https://github.com/ryantenney/synodock synodock --help
+$ go install github.com/ryantenney/synodock@latest
 ```
 
-Python 3.12+.
+Go 1.26+. One static binary, no runtime to install; macOS and Linux.
 
 ## Setup
 
-Use a DSM account that has Container Manager permission. A dedicated one is best: an
+Use a DSM account that has Container Manager permission. A dedicated one is best: you
+can audit, rotate or disable it on its own. Don't mistake it for a low-privilege
+account, though: whoever can drive Container Manager can start a privileged container
+with the NAS's `/` mounted, so treat its password and tokens like root's SSH key. An
 exec runs as each container's default user, often root, the same as the Terminal tab.
 
 Set the address and account in the environment or in `~/.config/synodock/config.toml`:
@@ -46,33 +47,97 @@ user = "docker"
 |---|---|---|---|
 | DSM address | `SYNODOCK_URL` | `url` | required |
 | Account | `SYNODOCK_USER` | `user` | required |
-| Password | `SYNODOCK_PASSWORD` | | else the macOS keychain, else a prompt |
-| Keychain service (macOS) | `SYNODOCK_KEYCHAIN` | `keychain` | default `synodock`; account = the user |
+| Password | `SYNODOCK_PASSWORD` | | else `password_command`, else the macOS keychain, else a prompt |
+| Password command | `SYNODOCK_PASSWORD_COMMAND` | `password_command` | prints the password |
+| 2FA code command | `SYNODOCK_OTP_COMMAND` | `otp_command` | prints a current code, when DSM asks for one |
+| Idle exit | `SYNODOCK_IDLE_EXIT` | `idle_exit` | how long `serve` waits idle before exiting, e.g. `"30m"`; `"0"` never; default 15m when started on demand |
+| Keychain service (macOS) | `SYNODOCK_KEYCHAIN` | `keychain` | default `synodock`; account = `user@host`, else the user |
 
-On macOS, store the password in the keychain once:
+On macOS, store the password in the keychain once (`-a docker@nas.example.com`
+instead keeps the same account name on several NAS apart):
 
 ```console
 $ security add-generic-password -s synodock -a docker -w
 ```
 
-If the account uses two-factor authentication, log in once with a current code. That
-saves a device token (in the keychain on macOS, otherwise in
-`~/.config/synodock/`, mode 0600), and later logins need no code:
+Anywhere else, or to keep it in another store, point `password_command` at it. The
+commands run under `sh` and the first line they print is used:
+
+```toml
+password_command = "secret-tool lookup service synodock user docker"   # GNOME/KDE
+# password_command = "pass show nas/docker"
+# password_command = "op read op://Private/NAS/password"                # 1Password
+```
+
+### Two-factor authentication
+
+The first login with a code saves a device token (in the keychain on macOS,
+otherwise in `~/.config/synodock/`, mode 0600), and later logins need no code. DSM
+lists it under the account's trusted devices, where you can revoke it. When DSM
+asks for a code, synodock takes it from `otp_command` if set, else asks on the
+terminal, else fails. Or give one directly:
 
 ```console
 $ synodock login --otp 123456
 ```
+
+`otp_command` lets a machine with no one at the keyboard log in the first time, or
+again after the device token is revoked. The command prints the code, so the TOTP
+secret stays in your store; but a store holding both the password and the secret is
+a full login on its own, from anywhere, until 2FA is re-enrolled:
+
+```toml
+otp_command = "op read 'op://Private/NAS/one-time password?attribute=otp'"
+# otp_command = "oathtool --totp -b \"$(security find-generic-password -s synodock-totp -w)\""
+```
+
+### Several NAS
+
+Name each NAS in a `[nas.NAME]` section, with the same settings as the top level:
+
+```toml
+default = "home"   # what `synodock use home` writes
+
+[nas.home]
+url = "https://nas.example.com:5001"
+user = "docker"
+
+[nas.office]
+url = "https://office-nas.example.com:5001"
+user = "svc-docker"
+password_command = "op read op://Work/office-nas/password"
+```
+
+synodock picks the NAS the way the docker CLI picks its engine, first match wins:
+
+| synodock | like docker's |
+|---|---|
+| `-H https://user@nas:5001` | `-H` |
+| `--nas NAME` | `--context NAME` |
+| `SYNODOCK_URL` (with `SYNODOCK_USER`) | `DOCKER_HOST` |
+| `SYNODOCK_NAS` | `DOCKER_CONTEXT` |
+| `default =`, set by `synodock use NAME` | `docker context use` |
+| `url` and `user` at the top of `config.toml` | the default socket |
+
+A `[nas.NAME]` profile is self-contained, as a docker context is: `SYNODOCK_PASSWORD`
+and the other `SYNODOCK_*` settings only apply to a NAS given by `-H` or
+`SYNODOCK_URL`, or to the one at the top. `synodock use` lists them and marks the
+one in use.
 
 ## Commands
 
 ```console
 $ synodock ps [-a]                          # containers
 $ synodock logs NAME [-n 100]               # a container's log
+$ synodock top NAME                          # its processes (Container Manager's Processes view)
 $ synodock exec NAME -- COMMAND...          # exits with the command's status
 $ synodock exec -it NAME bash               # interactive
 $ printf 'data' | synodock exec -i NAME -- cat
 $ synodock exec -d NAME -- sleep 600        # in the background; returns at once
 $ synodock serve                            # Docker API on ~/.cache/synodock/docker.sock
+$ synodock --nas office serve --docker-context   # office.sock, and docker context synology-office
+$ synodock use [NAME]                       # list the NAS, or pick the default
+$ synodock --nas home service install       # serve started on demand by launchd/systemd
 ```
 
 ### exec
@@ -98,16 +163,61 @@ $ docker --context synology ps
 $ docker --context synology exec -it mycontainer sh
 ```
 
+`serve` for a `[nas.NAME]` listens on `~/.cache/synodock/NAME.sock`, so each NAS
+gets its own; `--docker-context` creates or updates a docker context for it
+(`synology`, or `synology-NAME`; `--docker-context=other` names it).
+
 The socket is mode 0600, and nothing listens on the network. Supported: `ps`,
 `inspect`, `start`, `stop`, `restart`, `kill`, `rm`, `logs` (`-f` by polling),
-`stats`, `images`, `image inspect`, `rmi`, `load`, `pull` (Docker Hub),
-`network ls`, `volume ls`, `events` (polled every 2 s), `exec` (`-i`, `-t`, `-e`, `-w`,
-`-d`), `version`, `info`. Everything else answers 501. TUIs like
-[lazydocker](https://github.com/jesseduffield/lazydocker) work against it
-(`DOCKER_HOST=unix://$HOME/.cache/synodock/docker.sock lazydocker`).
+`stats`, `top` (PID, %CPU, %MEM, RSS, STIME and CMD; no ps options), `images`,
+`image inspect`, `rmi`, `load`, `pull` (Docker Hub), `network ls`, `volume ls`,
+`events` (polled every 2 s), `exec` (`-i`, `-t`, `-e`, `-w`, `-d`), `version`, `info`.
+Everything else answers 501. TUIs like
+[lazydocker](https://github.com/jesseduffield/lazydocker) work against it, its Stats
+and Top tabs included (`DOCKER_HOST=unix://$HOME/.cache/synodock/docker.sock
+lazydocker`).
 
 `docker inspect` on a container returns its full config, environment secrets
 included, as dockerd does.
+
+### Started on demand
+
+`synodock service install` hands the socket to launchd (macOS) or systemd (Linux),
+which listens on it and starts `synodock serve` when something first connects; serve
+exits again after 15 idle minutes (`idle_exit` in the profile changes it) and comes
+back on the next connection. No terminal has to stay open, and nothing logs in to DSM until it's used.
+
+```console
+$ synodock --nas home service install   # logs in here first (a 2FA code if needed), then
+                                        # installs, creates docker context synology-home,
+                                        # and checks serve answers
+$ docker --context synology-home ps     # starts serve
+$ synodock --nas home service status
+$ synodock --nas home service uninstall
+```
+
+- The service runs unattended, so it logs in with the device token: install logs in
+  first, where a 2FA code can still be typed, and saves one. The password comes from
+  the keychain or `password_command` (the service gets this shell's `PATH`, so tools
+  like `op` are found).
+- It has to be a NAS in `config.toml`, not one given by `-H` or `SYNODOCK_URL`: the
+  service doesn't see this shell's environment.
+- macOS: a LaunchAgent `com.github.ryantenney.synodock.NAME` in
+  `~/Library/LaunchAgents`, logging to `~/Library/Logs/synodock-NAME.log`. No cgo:
+  synodock calls `launch_activate_socket` directly.
+- macOS keeps processes launchd starts off the local network until you allow them,
+  and asks once. `service install` waits while you click Allow (or turn synodock on
+  in System Settings > Privacy & Security > Local Network). The permission only
+  reaches processes started after it, so a serve that was refused exits once its
+  requests are done and the next connection starts one that has it. A NAS reached
+  through a public address or a VPN isn't affected.
+- Linux: `synodock-NAME.socket` and `.service` in `~/.config/systemd/user`, logging to
+  the journal. User services stop at logout unless `loginctl enable-linger` is on.
+- The service runs `synodock --nas NAME serve`, so the profile in `config.toml`
+  (address, account, credentials, `idle_exit`) is read at each start: edit it, no
+  reinstall. Run `service install` again only if the synodock binary moves, since the
+  service names it by its path. (`service install --idle-exit` fixes the timeout in
+  the service instead.)
 
 ## How it works
 
@@ -127,8 +237,18 @@ Three quirks shape the rest:
    lookups take 5.1 s each instead of 0.1 s, so synodock sends one call at a time and
    caches briefly. `SYNODOCK_TRACE=1` logs every call's wait and duration.
 
-`synodock/terminal.py` has the protocol in full; `docs/roadmap.md` has what's missing
-compared with `docker exec` and how it could be done.
+`internal/terminal/session.go` has the protocol in full; `docs/roadmap.md` has what's
+missing compared with `docker exec` and how it could be done.
+
+## Development
+
+```console
+$ go test ./...                                  # execs run under dash on a local pty
+$ SYNODOCK_TEST_IMAGE=alpine go test ./internal/terminal/   # or in a throwaway container
+```
+
+The exec tests stand in for Container Manager's Terminal websocket and run the real
+framing scripts; the serve test drives the stock `docker` CLI against a fake DSM.
 
 ## License
 
