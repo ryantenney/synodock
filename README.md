@@ -126,6 +126,11 @@ one in use.
 
 ## Commands
 
+Commands come in docker-style groups, `synodock container ls`, with `ps`, `logs`,
+`top` and `exec` as top-level shortcuts, as docker has them. `synodock GROUP` lists a
+group's commands; more groups (projects, images, networks, registries) are coming,
+see `docs/roadmap.md`.
+
 ```console
 $ synodock ps [-a]                          # containers
 $ synodock logs NAME [-n 100]               # a container's log

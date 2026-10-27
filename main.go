@@ -2,15 +2,12 @@
 //
 // Author: Ryan Tenney
 //
-//	synodock login [--otp CODE]          check the login; with --otp, save a 2FA device token
-//	synodock ps [-a]                     containers
-//	synodock logs NAME [-n 100]          a container's log, oldest first
-//	synodock top NAME                    a container's processes
-//	synodock exec [-i] [-t] [-d] NAME -- COMMAND...
-//	synodock serve [--socket PATH]       Docker Engine API on a Unix socket, for the docker CLI
-//	synodock use [NAME]                  list the NAS in config.toml, or pick the default
+//	synodock container ls|logs|top|exec  containers (ps, logs, top, exec: shortcuts, as docker's)
 //	synodock service install|uninstall|status
 //	                                     serve started on demand by launchd or systemd
+//	synodock login [--otp CODE]          check the login; with --otp, save a 2FA device token
+//	synodock serve [--socket PATH]       Docker Engine API on a Unix socket, for the docker CLI
+//	synodock use [NAME]                  list the NAS in config.toml, or pick the default
 //
 // Global flags pick the NAS, as docker's do the engine: -H/--host URL, --nas NAME.
 //
@@ -35,8 +32,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/spf13/pflag"
-
 	"github.com/ryantenney/synodock/internal/activation"
 	"github.com/ryantenney/synodock/internal/dockerapi"
 	"github.com/ryantenney/synodock/internal/dsm"
@@ -46,36 +41,12 @@ import (
 
 const version = "0.1.0"
 
-const usage = `usage: synodock [-H URL | --nas NAME] <command> [flags]
-
-docker exec and a Docker API for Synology Container Manager, over DSM's web API (no SSH)
-
-  -H, --host URL                     a NAS by address: https://user@nas.example.com:5001
-      --nas NAME                     a [nas.NAME] in config.toml (else SYNODOCK_URL, SYNODOCK_NAS,
-                                     default = in config.toml, then its top-level url)
-
-commands:
-  login [--otp CODE]                 check that the login works; with --otp, save a 2FA device token
-  ps [-a]                            list containers
-  logs NAME [-n N] [-k WORD]         a container's log, oldest first
-  top NAME                           a container's processes
-  exec [-i] [-t] [-d] NAME [--] COMMAND...
-                                     run a command in a running container
-  serve [--socket PATH] [--docker-context[=NAME]] [-v]
-                                     serve a Docker Engine API (subset) on a Unix socket, for the docker CLI
-  use [NAME | --unnamed]             list the NAS in config.toml, or pick the one commands use
-  service install|uninstall|status   run serve as a service launchd/systemd starts on demand
-
-Run synodock <command> -h for a command's flags.
-`
-
 type options struct {
 	sel     dsm.Selection
 	cmd     string
 	use     string
 	unnamed bool
 	context string
-	action  string
 	idle    time.Duration
 	idleSet bool // --idle-exit given
 	noCtx   bool
@@ -88,6 +59,7 @@ type options struct {
 	exec    terminal.RunOptions
 	socket  string
 	verbose bool
+	noGzip  bool
 }
 
 func main() {
@@ -102,7 +74,7 @@ func run(args []string) int {
 	if !ok {
 		return code
 	}
-	if o.cmd == "service" && o.action != "install" {
+	if o.cmd == "service status" || o.cmd == "service uninstall" {
 		if err := serviceCommand(o); err != nil {
 			fmt.Fprintf(os.Stderr, "synodock: %v\n", err)
 			return 1
@@ -143,136 +115,8 @@ func run(args []string) int {
 	return 1
 }
 
-// parse reads the command line; ok is false when there's nothing to run, with
-// the exit code to leave with.
-func parse(args []string) (o options, code int, ok bool) {
-	global := pflag.NewFlagSet("synodock", pflag.ContinueOnError)
-	global.SetInterspersed(false) // flags after the command are the command's
-	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	global.StringVarP(&o.sel.Host, "host", "H", "", "")
-	global.StringVar(&o.sel.NAS, "nas", "", "")
-	showVersion := global.Bool("version", false, "")
-	if err := global.Parse(args); err != nil {
-		if errors.Is(err, pflag.ErrHelp) {
-			fmt.Print(usage)
-			return o, 0, false
-		}
-		return o, 2, false
-	}
-	if *showVersion {
-		fmt.Println("synodock " + version)
-		return o, 0, false
-	}
-	args = global.Args()
-	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return o, 2, false
-	}
-	if args[0] == "help" {
-		fmt.Print(usage)
-		return o, 0, false
-	}
-	o.cmd = args[0]
-	fs := pflag.NewFlagSet("synodock "+o.cmd, pflag.ContinueOnError)
-	fs.SortFlags = false
-	var noGzip bool
-	positional := "" // for the usage line
-	switch o.cmd {
-	case "login":
-		fs.StringVar(&o.otp, "otp", "", "a current code from the authenticator app")
-	case "ps":
-		fs.BoolVarP(&o.all, "all", "a", false, "include stopped containers")
-	case "logs":
-		positional = "NAME"
-		fs.IntVarP(&o.tail, "tail", "n", 100, "last N lines")
-		fs.StringVarP(&o.keyword, "keyword", "k", "", "only lines containing this")
-	case "top":
-		positional = "NAME"
-	case "exec":
-		positional = "NAME [--] COMMAND..."
-		fs.SetInterspersed(false) // flags after NAME are the command's
-		fs.BoolVarP(&o.exec.Stdin, "interactive", "i", false, "send stdin to the command")
-		fs.BoolVarP(&o.exec.TTY, "tty", "t", false, "with -i on a terminal: raw mode, resize, ^C goes through")
-		fs.BoolVarP(&o.exec.Detach, "detach", "d", false, "start it in the background and return; output discarded")
-		fs.BoolVar(&o.exec.Raw, "raw", false, "don't wrap in sh (images without one); no exit status")
-		fs.BoolVar(&noGzip, "no-gzip", false, "don't compress output in the container (SYNODOCK_GZIP=0 does the same)")
-	case "serve":
-		fs.StringVar(&o.socket, "socket", "", "the socket to serve on (default ~/.cache/synodock/docker.sock, or NAME.sock for --nas NAME)")
-		fs.StringVar(&o.context, "docker-context", "", "create or update a docker context for this socket (default name synology, or synology-NAME)")
-		fs.Lookup("docker-context").NoOptDefVal = "auto"
-		fs.DurationVar(&o.idle, "idle-exit", 0, "exit after no requests for this long (default: idle_exit in "+
-			"config.toml, else 15m when started on demand, else never)")
-		fs.BoolVarP(&o.verbose, "verbose", "v", false, "log each request")
-	case "service":
-		positional = "install|uninstall|status"
-		fs.DurationVar(&o.idle, "idle-exit", 0, "install: fix serve's idle timeout in the service, over idle_exit in config.toml")
-		fs.BoolVar(&o.noCtx, "no-docker-context", false, "install: don't create a docker context for the socket")
-		fs.BoolVarP(&o.verbose, "verbose", "v", false, "install: serve logs each request")
-	case "use":
-		positional = "[NAME]"
-		fs.BoolVar(&o.unnamed, "unnamed", false, "go back to the NAS at the top of config.toml")
-	default:
-		fmt.Fprintf(os.Stderr, "synodock: unknown command %q\n\n%s", o.cmd, usage)
-		return o, 2, false
-	}
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: synodock %s [flags] %s\n\n%s", o.cmd, positional, fs.FlagUsages())
-		if o.cmd == "exec" {
-			fmt.Fprintln(os.Stderr, "\nRuns through Container Manager's Terminal: always on a TTY, as the "+
-				"container's default user, so stderr comes back with stdout.")
-		}
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, pflag.ErrHelp) {
-			return o, 0, false
-		}
-		return o, 2, false
-	}
-	o.idleSet = fs.Changed("idle-exit")
-	rest := fs.Args()
-	switch o.cmd {
-	case "service":
-		if len(rest) != 1 || rest[0] != "install" && rest[0] != "uninstall" && rest[0] != "status" {
-			fs.Usage()
-			return o, 2, false
-		}
-		o.action = rest[0]
-	case "use":
-		if len(rest) > 1 || len(rest) == 1 && o.unnamed {
-			fs.Usage()
-			return o, 2, false
-		}
-		if len(rest) == 1 {
-			o.use = rest[0]
-		}
-	case "logs", "top":
-		if len(rest) != 1 {
-			fs.Usage()
-			return o, 2, false
-		}
-		o.name = rest[0]
-	case "exec":
-		if len(rest) == 0 {
-			fs.Usage()
-			return o, 2, false
-		}
-		o.name, o.argv = rest[0], rest[1:]
-		if len(o.argv) > 0 && o.argv[0] == "--" {
-			o.argv = o.argv[1:]
-		}
-		o.exec.TTY = o.exec.TTY && o.exec.Stdin
-		o.exec.Gzip = terminal.GzipDefault() && !noGzip
-	default:
-		if len(rest) > 0 {
-			fmt.Fprintf(os.Stderr, "synodock %s: unexpected %q\n", o.cmd, rest[0])
-			return o, 2, false
-		}
-	}
-	return o, 0, true
-}
-
 func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
-	if o.cmd == "exec" && len(o.argv) == 0 {
+	if o.cmd == "container exec" && len(o.argv) == 0 {
 		return 0, dsm.Errorf("exec: no command given")
 	}
 	// Started on demand by launchd or systemd, serve logs in at the first request,
@@ -290,7 +134,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 	case "login":
 		fmt.Printf("logged in to %s as %s\n", client.URL, client.Config.User)
 
-	case "ps":
+	case "container ls":
 		rows, err := client.Containers()
 		if err != nil {
 			return 0, err
@@ -302,7 +146,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 			}
 		}
 
-	case "logs":
+	case "container logs":
 		page, err := client.ContainerLogs(o.name, o.tail, 0, "DESC", o.keyword)
 		if err != nil {
 			return 0, err
@@ -312,7 +156,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 			fmt.Printf("%s %-6s %s\n", e.Created, e.Stream, strings.TrimRightFunc(e.Text, unicode.IsSpace))
 		}
 
-	case "top":
+	case "container top":
 		procs, err := client.ContainerProcesses(o.name)
 		if err != nil {
 			return 0, err
@@ -327,13 +171,13 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		}
 		tw.Flush()
 
-	case "exec":
+	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
 
 	case "serve":
 		return 0, serve(ctx, client, o, listeners)
 
-	case "service":
+	case "service install":
 		return 0, serviceInstall(client, o)
 	}
 	return 0, nil
@@ -540,14 +384,14 @@ func serviceCommand(o options) error {
 	if err != nil {
 		return err
 	}
-	switch o.action {
-	case "status":
+	switch o.cmd {
+	case "service status":
 		state, err := service.Status(c.Name)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%s (%s): %s\n", service.Label(c.Name), service.Manager, state)
-	case "uninstall":
+	case "service uninstall":
 		files, err := service.Uninstall(c.Name, socketPath(c.Name))
 		if err != nil {
 			return err
