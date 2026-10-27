@@ -649,7 +649,15 @@ func (c *Client) FSPut(localPath, folder string, createParents, overwrite bool) 
 	if err != nil {
 		return err
 	}
-	filename := filepath.Base(localPath)
+	return c.fsUpload(f, info.Size(), filepath.Base(localPath), folder, createParents, overwrite)
+}
+
+// FSPutBytes uploads content as a file called filename in a NAS folder.
+func (c *Client) FSPutBytes(content []byte, filename, folder string, createParents, overwrite bool) error {
+	return c.fsUpload(bytes.NewReader(content), int64(len(content)), filename, folder, createParents, overwrite)
+}
+
+func (c *Client) fsUpload(f io.Reader, size int64, filename, folder string, createParents, overwrite bool) error {
 	boundary := RandomHex(16)
 	var head bytes.Buffer
 	for _, field := range [][2]string{{"path", folder}, {"create_parents", strconv.FormatBool(createParents)},
@@ -659,7 +667,7 @@ func (c *Client) FSPut(localPath, folder string, createParents, overwrite bool) 
 	fmt.Fprintf(&head, "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"+
 		"Content-Type: application/octet-stream\r\n\r\n", boundary, filename)
 	tail := fmt.Sprintf("\r\n--%s--\r\n", boundary)
-	total := int64(head.Len()) + info.Size() + int64(len(tail))
+	total := int64(head.Len()) + size + int64(len(tail))
 	body := &progressReader{r: io.MultiReader(&head, f, strings.NewReader(tail)), total: total, label: filename}
 	params := url.Values{"api": {"SYNO.FileStation.Upload"}, "version": {"2"}, "method": {"upload"}}
 	resp, err := c.request(c.ctx, params, body, "multipart/form-data; boundary="+boundary, total, true)

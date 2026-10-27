@@ -51,6 +51,7 @@ type group struct{ name, short string }
 var groups = []group{
 	{"container", "containers: list, logs, processes, exec"},
 	{"service", "run serve as a service launchd/systemd starts on demand"},
+	{"project", "Container Manager projects: list, config, ps, create, update, up, down, start, stop, restart"},
 }
 
 // shortcuts are top-level names for commands in a group, as docker's ps and exec.
@@ -62,6 +63,15 @@ var shortcuts = map[string]string{
 }
 
 var shortcutOrder = []string{"ps", "logs", "top", "exec"}
+
+// two takes NAME and FILE.
+func two(o *options, rest []string) bool {
+	if len(rest) != 2 {
+		return false
+	}
+	o.name, o.file = rest[0], rest[1]
+	return true
+}
 
 // one takes exactly one positional argument, a container's name.
 func one(o *options, rest []string) bool {
@@ -115,6 +125,27 @@ var commands = []*command{
 		}},
 	{group: "service", name: "uninstall", short: "remove it (the docker context is left)"},
 	{group: "service", name: "status", short: "whether it's loaded and running"},
+
+	{group: "project", name: "ls", aliases: []string{"list"}, short: "projects, with their status and folder"},
+	{group: "project", name: "config", opts: "[-o FILE]", args: "NAME", short: "a project's compose file",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVarP(&o.outFile, "output", "o", "", "write it to this file")
+		}, positional: one},
+	{group: "project", name: "ps", args: "NAME", short: "a project's containers, with health", positional: one},
+	{group: "project", name: "create", opts: "[--path DIR]", args: "NAME FILE",
+		short: "create a project from a compose file; makes its folder and the bind-mount folders in it",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.sharePath, "path", "", "the project's folder on the NAS (default /docker/NAME)")
+		}, positional: two},
+	{group: "project", name: "update", args: "NAME FILE",
+		short: "replace a stopped project's compose file; the old one is backed up first", positional: two},
+	{group: "project", name: "up", aliases: []string{"build"}, args: "NAME",
+		short: "bring a stopped project up: compose build, streamed", positional: one},
+	{group: "project", name: "down", aliases: []string{"clean"}, args: "NAME",
+		short: "take a project down: compose clean (containers and network; named volumes stay)", positional: one},
+	{group: "project", name: "start", args: "NAME", short: "compose start", positional: one},
+	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
+	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},
 
 	{name: "login", opts: "[--otp CODE]", short: "check that the login works; with --otp, save a 2FA device token",
 		flags: func(fs *pflag.FlagSet, o *options) {

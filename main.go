@@ -42,24 +42,27 @@ import (
 const version = "0.1.0"
 
 type options struct {
-	sel     dsm.Selection
-	cmd     string
-	use     string
-	unnamed bool
-	context string
-	idle    time.Duration
-	idleSet bool // --idle-exit given
-	noCtx   bool
-	otp     string
-	all     bool
-	name    string
-	tail    int
-	keyword string
-	argv    []string
-	exec    terminal.RunOptions
-	socket  string
-	verbose bool
-	noGzip  bool
+	sel       dsm.Selection
+	cmd       string
+	use       string
+	unnamed   bool
+	context   string
+	idle      time.Duration
+	idleSet   bool // --idle-exit given
+	noCtx     bool
+	otp       string
+	all       bool
+	name      string
+	tail      int
+	keyword   string
+	argv      []string
+	exec      terminal.RunOptions
+	socket    string
+	verbose   bool
+	noGzip    bool
+	file      string // project create/update: the compose file
+	sharePath string // project create: the folder, default /docker/NAME
+	outFile   string // project config: write to this file, not stdout
 }
 
 func main() {
@@ -171,6 +174,9 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		}
 		tw.Flush()
 
+	case "project ls", "project config", "project ps", "project create", "project update",
+		"project up", "project down", "project start", "project stop", "project restart":
+		return projectCommand(client, o)
 	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
 

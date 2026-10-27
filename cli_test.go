@@ -44,6 +44,28 @@ func TestParse(t *testing.T) {
 		{[]string{"service", "install", "--idle-exit", "5m", "-v"}, "service install", 0, func(o options) bool {
 			return o.idleSet && o.verbose && o.idle.Minutes() == 5
 		}},
+		{[]string{"project", "ls"}, "project ls", 0, nil},
+		{[]string{"project", "list"}, "project ls", 0, nil},
+		{[]string{"project", "config", "-o", "out.yml", "web"}, "project config", 0, func(o options) bool {
+			return o.name == "web" && o.outFile == "out.yml"
+		}},
+		{[]string{"project", "ps", "web"}, "project ps", 0, nil},
+		{[]string{"project", "create", "web", "c.yml", "--path", "/docker/x"}, "project create", 0, func(o options) bool {
+			return o.name == "web" && o.file == "c.yml" && o.sharePath == "/docker/x"
+		}},
+		{[]string{"project", "update", "web", "c.yml"}, "project update", 0, func(o options) bool {
+			return o.name == "web" && o.file == "c.yml"
+		}},
+		{[]string{"project", "up", "web"}, "project up", 0, nil},
+		{[]string{"project", "build", "web"}, "project up", 0, nil}, // compose's name for up
+		{[]string{"project", "down", "web"}, "project down", 0, nil},
+		{[]string{"project", "clean", "web"}, "project down", 0, nil},
+		{[]string{"project", "restart", "web"}, "project restart", 0, nil},
+		{[]string{"project", "create", "web"}, "", 2, nil},
+		{[]string{"project", "update", "web"}, "", 2, nil},
+		{[]string{"project", "up"}, "", 2, nil},
+		{[]string{"project", "up", "a", "b"}, "", 2, nil},
+		{[]string{"project", "config", "web", "extra"}, "", 2, nil},
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

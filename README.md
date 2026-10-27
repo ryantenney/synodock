@@ -141,6 +141,11 @@ $ printf 'data' | synodock exec -i NAME -- cat
 $ synodock exec -d NAME -- sleep 600        # in the background; returns at once
 $ synodock serve                            # Docker API on ~/.cache/synodock/docker.sock
 $ synodock --nas office serve --docker-context   # office.sock, and docker context synology-office
+$ synodock project ls                       # Container Manager projects
+$ synodock project config NAME [-o FILE]    # a project's compose file
+$ synodock project up|down|start|stop|restart NAME   # compose build/clean/start/stop/restart, streamed
+$ synodock project create NAME FILE [--path DIR]     # the folders are made too
+$ synodock project update NAME FILE         # stopped projects only; the old file is backed up
 $ synodock use [NAME]                       # list the NAS, or pick the default
 $ synodock --nas home service install       # serve started on demand by launchd/systemd
 ```
