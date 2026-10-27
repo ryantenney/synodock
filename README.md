@@ -237,8 +237,9 @@ Three quirks shape the rest:
    lookups take 5.1 s each instead of 0.1 s, so synodock sends one call at a time and
    caches briefly. `SYNODOCK_TRACE=1` logs every call's wait and duration.
 
-`internal/terminal/session.go` has the protocol in full; `docs/roadmap.md` has what's
-missing compared with `docker exec` and how it could be done.
+`internal/terminal/session.go` has the protocol in full; `docs/roadmap.md` has the plan
+for covering the rest of Container Manager (projects, images, networks, registries) on
+the command line, and what's missing compared with `docker exec`.
 
 ## Development
 
