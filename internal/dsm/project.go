@@ -268,3 +268,18 @@ func (c *Client) FSMkdir(folder, name string) error {
 		"folder_path": JS([]string{folder}), "name": JS([]string{name})})
 	return err
 }
+
+// ProjectLog is the compose output from the project's last action, as Container Manager
+// keeps it.
+func (c *Client) ProjectLog(id string) (string, error) {
+	var out string
+	err := c.CallInto(&out, "SYNO.Docker.Project", "log", 1, Params{"id": JS(id)})
+	return out, err
+}
+
+// ProjectDelete removes a project and its containers. Container Manager's own confirmation
+// warns that the project's data goes too; the API takes no option to keep any of it.
+func (c *Client) ProjectDelete(id string) error {
+	_, err := c.Call("SYNO.Docker.Project", "delete", 1, Params{"id": JS(id)})
+	return err
+}

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+
+	"golang.org/x/term"
 
 	"github.com/ryantenney/synodock/internal/dsm"
 )
@@ -33,6 +36,10 @@ func projectCommand(client *dsm.Client, o options) (int, error) {
 		return 0, projectCreate(client, o)
 	case "project update":
 		return 0, projectUpdate(client, o)
+	case "project logs":
+		return 0, projectLogs(client, o.name)
+	case "project rm":
+		return 0, projectRemove(client, o)
 	}
 	return projectRun(client, o.name, projectActions[o.cmd])
 }
@@ -149,4 +156,44 @@ func projectRun(client *dsm.Client, name, action string) (int, error) {
 			"so run up once first to resync\n", strings.Join(stale, ", "))
 	}
 	return client.ProjectStream(p.ID, action, func(line string) { fmt.Println(line) })
+}
+
+func projectLogs(client *dsm.Client, name string) error {
+	p, err := client.ProjectByName(name)
+	if err != nil {
+		return err
+	}
+	out, err := client.ProjectLog(p.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
+}
+
+// projectRemove deletes a project with its containers and data. It refuses a running
+// project, and asks for the name typed back unless -f, since nothing brings the data back.
+func projectRemove(client *dsm.Client, o options) error {
+	p, err := client.ProjectByName(o.name)
+	if err != nil {
+		return err
+	}
+	if p.Running() {
+		return dsm.Errorf("%s is %s; take it down first (synodock project down %s)", p.Name, p.Status, p.Name)
+	}
+	if !o.force {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return dsm.Errorf("project rm: not a terminal; pass -f to delete %s", p.Name)
+		}
+		fmt.Fprintf(os.Stderr, "This deletes %s with its containers and all its data. Type the name to confirm: ", p.Name)
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if strings.TrimSpace(answer) != p.Name {
+			return dsm.Errorf("not deleted")
+		}
+	}
+	if err := client.ProjectDelete(p.ID); err != nil {
+		return err
+	}
+	fmt.Printf("deleted project %s\n", p.Name)
+	return nil
 }

@@ -143,6 +143,12 @@ var commands = []*command{
 		short: "bring a stopped project up: compose build, streamed", positional: one},
 	{group: "project", name: "down", aliases: []string{"clean"}, args: "NAME",
 		short: "take a project down: compose clean (containers and network; named volumes stay)", positional: one},
+	{group: "project", name: "logs", args: "NAME", short: "the compose output from its last action", positional: one},
+	{group: "project", name: "rm", opts: "[-f]", args: "NAME",
+		short: "delete a stopped project with its containers and data; asks for the name unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}, positional: one},
 	{group: "project", name: "start", args: "NAME", short: "compose start", positional: one},
 	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
 	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},

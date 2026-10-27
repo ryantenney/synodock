@@ -63,6 +63,7 @@ type options struct {
 	file      string // project create/update: the compose file
 	sharePath string // project create: the folder, default /docker/NAME
 	outFile   string // project config: write to this file, not stdout
+	force     bool   // project rm: no confirmation
 }
 
 func main() {
@@ -175,7 +176,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		tw.Flush()
 
 	case "project ls", "project config", "project ps", "project create", "project update",
-		"project up", "project down", "project start", "project stop", "project restart":
+		"project up", "project down", "project start", "project stop", "project restart", "project logs", "project rm":
 		return projectCommand(client, o)
 	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
