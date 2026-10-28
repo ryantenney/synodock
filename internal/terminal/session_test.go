@@ -189,17 +189,31 @@ func fakeClientWith(t *testing.T, reorder bool) (*dsm.Client, string) {
 
 func runFramed(t *testing.T, client *dsm.Client, argv []string, o Options) ([]byte, int) {
 	t.Helper()
+	out, _, code := runFramedStreams(t, client, argv, o)
+	return out, code
+}
+
+// runFramedStreams is runFramed with stdout and stderr apart.
+func runFramedStreams(t *testing.T, client *dsm.Client, argv []string, o Options) ([]byte, []byte, int) {
+	t.Helper()
 	s, err := Open(context.Background(), client, "ctr", CommandFor(argv, o), 24, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	var out bytes.Buffer
-	code, err := PumpFramed(context.Background(), s, func(b []byte) error { out.Write(b); return nil })
+	var out, errOut bytes.Buffer
+	code, err := PumpFramed(context.Background(), s, func(stream int, b []byte) error {
+		if stream == Stderr {
+			errOut.Write(b)
+		} else {
+			out.Write(b)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return out.Bytes(), code
+	return out.Bytes(), errOut.Bytes(), code
 }
 
 func TestFramedThroughPty(t *testing.T) {
@@ -249,7 +263,7 @@ func TestFramedSlowOutputIsLive(t *testing.T) {
 	start := time.Now()
 	var firstAt time.Duration
 	var out bytes.Buffer
-	if _, err := PumpFramed(context.Background(), s, func(b []byte) error {
+	if _, err := PumpFramed(context.Background(), s, func(_ int, b []byte) error {
 		if firstAt == 0 {
 			firstAt = time.Since(start)
 		}
@@ -306,7 +320,40 @@ func TestInterruptDeletesExec(t *testing.T) {
 	defer s.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if _, err := PumpFramed(ctx, s, func([]byte) error { return nil }); err != context.DeadlineExceeded {
+	if _, err := PumpFramed(ctx, s, func(int, []byte) error { return nil }); err != context.DeadlineExceeded {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestFramedKeepsStderrApart(t *testing.T) {
+	client, dir := fakeClient(t)
+	data := make([]byte, 150000)
+	_, _ = rand.Read(data)
+	path := filepath.Join(dir, "random")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Both streams at once and at full speed: lines interleave in the container, so any
+	// mixing between them, or any loss or reordering within one, shows up.
+	script := `i=0; while [ $i -lt 3000 ]; do echo out$i; echo err$i >&2; i=$((i+1)); done
+cat "$1" & cat "$1" >&2 & wait; exit 3`
+	var wantOut, wantErr bytes.Buffer
+	for i := 0; i < 3000; i++ {
+		fmt.Fprintf(&wantOut, "out%d\n", i)
+		fmt.Fprintf(&wantErr, "err%d\n", i)
+	}
+	wantOut.Write(data)
+	wantErr.Write(data)
+	for _, gz := range []bool{false, true} {
+		out, errOut, code := runFramedStreams(t, client, []string{"sh", "-c", script, "sh", path}, Options{Gzip: gz})
+		if code != 3 {
+			t.Errorf("gzip=%v: exit %d, want 3", gz, code)
+		}
+		if !bytes.Equal(out, wantOut.Bytes()) {
+			t.Errorf("gzip=%v: stdout differs (%d bytes, want %d)", gz, len(out), wantOut.Len())
+		}
+		if !bytes.Equal(errOut, wantErr.Bytes()) {
+			t.Errorf("gzip=%v: stderr differs (%d bytes, want %d)", gz, len(errOut), wantErr.Len())
+		}
 	}
 }

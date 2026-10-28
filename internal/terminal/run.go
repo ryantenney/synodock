@@ -34,8 +34,12 @@ func Run(ctx context.Context, client *dsm.Client, container string, argv []strin
 			_, _, err := PumpUnframed(ctx, s, writeString, nil, false, false, true)
 			return 0, err
 		}
-		return PumpFramed(ctx, s, func(b []byte) error {
-			_, err := os.Stdout.Write(b)
+		return PumpFramed(ctx, s, func(stream int, b []byte) error {
+			out := os.Stdout
+			if stream == Stderr {
+				out = os.Stderr
+			}
+			_, err := out.Write(b)
 			return err
 		})
 	}

@@ -867,7 +867,7 @@ func (s *server) execStart(w *response, r *http.Request, q query, p []string) er
 	}
 	ex.mu.Unlock()
 	if framed {
-		code, err = terminal.PumpFramed(ctx, session, func(b []byte) error { return write(b, 1) })
+		code, err = terminal.PumpFramed(ctx, session, func(stream int, b []byte) error { return write(b, byte(stream)) })
 	} else {
 		var input io.Reader
 		if stdin {
@@ -913,7 +913,7 @@ func (s *server) execDetached(w *response, r *http.Request, ex *Exec) error {
 		ex.finish(nil)
 		return err
 	}
-	code, err := terminal.PumpFramed(r.Context(), session, func(b []byte) error { out.Write(b); return nil })
+	code, err := terminal.PumpFramed(r.Context(), session, func(_ int, b []byte) error { out.Write(b); return nil })
 	session.Close()
 	if err != nil {
 		ex.finish(nil)

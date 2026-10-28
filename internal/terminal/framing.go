@@ -22,24 +22,51 @@ const (
 	stallTimeout = 10 * time.Second // half a record and nothing more for this long: give up
 )
 
-// Records: \x1e<kind> <seq> <n> <hex>\n. D = n bytes of output, E = end of output
-// (seq = number of D records), S = exit status n, Z = each chunk that follows is
-// its own gzip member (sent first, when the image has gzip and it wasn't turned off).
-var record = regexp.MustCompile(`^\x1e([DESZ]) (\d+) (\d+) ([0-9a-f]*)\r?\n$`)
+// Records: \x1e<kind> <seq> <n> <hex> <sum>\n. D = n bytes of stdout, R = n bytes of
+// stderr (the two share seq), E = end of output (seq = number of D and R records), S =
+// exit status n, Z = each chunk that follows is its own gzip member, per stream (sent
+// first, when the image has gzip and it wasn't turned off). sum is the Fletcher-16 of a
+// D or R record's bytes: the relay can split one record into several pty reads and
+// reorder them, and pieces of hex in the wrong order still look like a record; the
+// checksum tells the right order from a wrong one.
+var record = regexp.MustCompile(`^\x1e([DRESZ]) (\d+) (\d+) ([0-9a-f]*) ?(\d*)\r?\n$`)
 
-// A "." line from the chunk loop ends a chunk: send what's held, however little.
-const awkProgram = `function ack() { fflush(); if ((getline line < "/dev/tty") <= 0) exit 1 }
-function emit(n) { printf "\036D %d %d %s\n", seq++, n, substr(buf, 1, 2 * n); buf = substr(buf, 2 * n + 1); ack() }
-$0 == "." { if (buf != "") emit(length(buf) / 2); next }
-{ gsub(/[^0-9a-f]/, ""); buf = buf $0; while (length(buf) >= 2 * B) emit(B) }
-END { if (buf != "") emit(length(buf) / 2); printf "\036E %d 0 \n", seq; ack() }`
+// fletcher16 is the checksum the framing script appends to a data record. It depends on
+// the bytes' order, so a record put together from reordered pieces fails it.
+func fletcher16(data []byte) int {
+	a, b := 0, 0
+	for _, v := range data {
+		a = (a + int(v)) % 255
+		b = (b + a) % 255
+	}
+	return b*256 + a
+}
 
-// The output is cut into chunks by dd, which takes what the pipe holds right now
-// (one read, up to 64 KiB), and each chunk goes through its own gzip and od, so
-// nothing waits on a buffer: a line a second arrives a second apart, and bulk output
-// still compresses in 64 KiB pieces. mawk reads pipes in blocks unless -W interactive;
-// busybox awk ignores that with a warning, so it's only passed when awk is silent.
-// The tools' stderr stays off the tty: one stray line there jams the framing.
+// Each input line is "<stream> <od line>" or "<stream> .", stream 1 for stdout and 2 for
+// stderr; a "." ends that stream's chunk: send what's held, however little.
+const awkProgram = `BEGIN { for (i = 0; i < 256; i++) H[sprintf("%02x", i)] = i }
+function ack() { fflush(); if ((getline line < "/dev/tty") <= 0) exit 1 }
+function sum(h,   i, a, c) { a = 0; c = 0; for (i = 1; i < length(h); i += 2) { a = (a + H[substr(h, i, 2)]) % 255; c = (c + a) % 255 } return c * 256 + a }
+function emit(s, n,   h) { h = substr(b[s], 1, 2 * n); printf "\036%s %d %d %s %d\n", (s == 2 ? "R" : "D"), seq++, n, h, sum(h); b[s] = substr(b[s], 2 * n + 1); ack() }
+{ s = $1; sub(/^[0-9]+ /, "") }
+$0 == "." { if (b[s] != "") emit(s, length(b[s]) / 2); next }
+{ gsub(/[^0-9a-f]/, ""); b[s] = b[s] $0; while (length(b[s]) >= 2 * B) emit(s, B) }
+END { for (s = 1; s <= 2; s++) if (b[s] != "") emit(s, length(b[s]) / 2); printf "\036E %d 0 \n", seq; ack() }`
+
+// stdout and stderr each go through their own chunk loop (chunks 1, chunks 2): dd takes
+// what the pipe holds right now (one read, up to 64 KiB), and each chunk goes through
+// its own gzip and od, so nothing waits on a buffer: a line a second arrives a second
+// apart, and bulk output still compresses in 64 KiB pieces. Each loop's lines are tagged
+// with its stream and written one line per write(), under PIPE_BUF, so the two loops'
+// lines never mix in the one pipe to the framer. Under -W interactive mawk writes
+// unbuffered, and a print or a printf with several arguments goes out as several
+// writes (traced: "1", " ", the line, "\n"), so each line is built first and printed
+// as one string, which is one write. od -w512 makes those lines 512 bytes each (about
+// 1.5 KiB of text, still one atomic write) instead of 16, where od takes -w: the tagging
+// costs a read and a write per line, so wide lines are what keep it fast. Order between the streams is as it
+// arrives, as with docker exec. mawk reads pipes in blocks unless -W interactive;
+// busybox awk ignores that with a warning, so it's only passed when awk is silent. The
+// tools' stderr stays off the tty: one stray line there jams the framing.
 var framed = `stty -echo -opost 2>/dev/null
 if ! command -v od >/dev/null || ! command -v awk >/dev/null || ! command -v dd >/dev/null; then
   echo "synodock exec: the container has no od, awk or dd (use --raw)"; exit 127; fi
@@ -49,14 +76,18 @@ Z=cat
 if [ "$SD_GZIP" = 1 ] && command -v gzip >/dev/null; then Z='gzip -1'; printf '\036Z 0 1 \n'; read -r line </dev/tty; fi
 AI=
 if [ -z "$(awk -W interactive 'BEGIN {}' </dev/null 2>&1)" ]; then AI='-W interactive'; fi
+W=
+if printf x | od -w512 -An -v -tx1 >/dev/null 2>&1; then W=-w512; fi
+chunks() {
+  { while :; do
+      st=$( { LC_ALL=C dd bs=65536 count=1 2>&3 | $Z 2>/dev/null | od $W -An -v -tx1 2>/dev/null >&5; } 3>&1 )
+      echo .
+      case $st in "0+0 records in"*) break;; esac
+    done 5>&1; } | awk $AI -v S="$1" '{ line = S " " $0 "\n"; printf "%s", line; fflush() }' 2>/dev/null
+}
 exec 4>&1
-s=$( { { "$@" </dev/null 2>&1 3>&- 4>&-; echo $? >&3; } | {
-       while :; do
-         st=$( { LC_ALL=C dd bs=65536 count=1 2>&3 | $Z 2>/dev/null | od -An -v -tx1 2>/dev/null >&5; } 3>&1 )
-         echo .
-         case $st in "0+0 records in"*) break;; esac
-       done 5>&1
-     } | awk $AI -v B=` + strconv.Itoa(recordBytes) + ` '` + awkProgram + `' 2>/dev/null >&4; } 3>&1 )
+s=$( { { { { "$@" </dev/null 2>&1 1>&7 7>&- 8>&- 3>&- 4>&-; echo $? >&3; } | chunks 2 >&8; } 7>&1 | chunks 1; } 8>&1 |
+     awk $AI -v B=` + strconv.Itoa(recordBytes) + ` '` + awkProgram + `' 2>/dev/null >&4; } 3>&1 )
 printf '\036S 0 %d \n' "$s"
 read -r line </dev/tty`
 
@@ -200,20 +231,60 @@ type deframer struct {
 	hasStatus bool
 }
 
-const maxPieces = 4
+// maxPieces is how many pty reads one record may arrive in, and maxOrders how many
+// orderings of them to try. A full record of output that doesn't compress is about 2 KiB
+// of hex, which the NAS's relay was seen to split into more than 8 pieces and reorder.
+// Orderings are tried nearest the arrival order first, which is where the right one is,
+// and only once the record's start and end have both arrived.
+const (
+	maxPieces = 12
+	maxOrders = 100000
+)
 
 // feed returns the record once it's complete, else nil.
 func (d *deframer) feed(text string) (*frame, error) {
 	d.pieces = append(d.pieces, text)
 	if len(d.pieces) > maxPieces {
-		return nil, dsm.Errorf("exec output didn't decode (not from the framing script?): %q", truncate(d.leftover(), 300))
+		sizes := make([]string, len(d.pieces))
+		for i, p := range d.pieces {
+			sizes[i] = strconv.Itoa(len(p))
+		}
+		return nil, dsm.Errorf("exec output didn't decode (not from the framing script?): %d pieces of %s bytes: %q",
+			len(d.pieces), strings.Join(sizes, ", "), truncate(d.leftover(), 300))
+	}
+	if !d.complete() {
+		return nil, nil
 	}
 	var m []string
+	var data []byte
+	tries := 0
 	permute(d.pieces, func(order []string) bool {
+		if tries++; tries > maxOrders {
+			return true // give up: m is nil
+		}
 		m = record.FindStringSubmatch(strings.Join(order, ""))
-		return m != nil
+		if m == nil {
+			return false
+		}
+		if k := m[1][0]; k != 'D' && k != 'R' {
+			return true
+		}
+		// Data: the right order is the one whose bytes match the checksum.
+		var err error
+		if data, err = hex.DecodeString(m[4]); err != nil {
+			m = nil
+			return false
+		}
+		if want, err := strconv.Atoi(m[5]); err != nil || fletcher16(data) != want {
+			m = nil
+			return false
+		}
+		return true
 	})
 	if m == nil {
+		if tries > maxOrders {
+			return nil, dsm.Errorf("exec output: no order of %d pieces made a record", len(d.pieces))
+		}
 		return nil, nil
 	}
 	d.pieces = nil
@@ -233,18 +304,27 @@ func (d *deframer) feed(text string) (*frame, error) {
 	if kind == 'E' {
 		return &frame{kind: kind}, nil
 	}
-	if len(m[4]) != 2*n {
-		return nil, dsm.Errorf("exec output record %d has %d bytes, said %d", seq, len(m[4])/2, n)
-	}
-	data, err := hex.DecodeString(m[4])
-	if err != nil {
-		return nil, err
+	// D (stdout) and R (stderr) both carry data, in one sequence.
+	if len(data) != n {
+		return nil, dsm.Errorf("exec output record %d has %d bytes, said %d", seq, len(data), n)
 	}
 	d.seq++
 	return &frame{kind: kind, n: n, data: data}, nil
 }
 
 func (d *deframer) leftover() string { return strings.Join(d.pieces, "") }
+
+// complete says whether a record's first and last pieces have both arrived: one piece
+// starts with the record mark and one ends with its newline. Until then there's no point
+// trying orderings.
+func (d *deframer) complete() bool {
+	start, end := false, false
+	for _, p := range d.pieces {
+		start = start || strings.HasPrefix(p, "\x1e")
+		end = end || strings.HasSuffix(p, "\n")
+	}
+	return start && end
+}
 
 // permute calls try with each ordering of items, in itertools.permutations order,
 // until it returns true.
@@ -355,14 +435,21 @@ func (g *gunzip) abort() {
 	<-g.done
 }
 
-// PumpFramed writes the output in order and returns the exit status. Cancelling
-// ctx sends ^C and returns ctx's error.
-func PumpFramed(ctx context.Context, s *Session, write func([]byte) error) (int, error) {
+// Stdout and Stderr are the streams PumpFramed hands output to, as docker numbers them.
+const (
+	Stdout = 1
+	Stderr = 2
+)
+
+// PumpFramed writes the output in order, each piece to the stream it came from, and
+// returns the exit status. Cancelling ctx sends ^C and returns ctx's error.
+func PumpFramed(ctx context.Context, s *Session, write func(stream int, data []byte) error) (int, error) {
 	d := &deframer{}
-	var gz *gunzip
+	gzipped := false
+	gz := map[int]*gunzip{} // one decompressor per stream: each sends its own gzip members
 	defer func() {
-		if gz != nil {
-			gz.abort()
+		for _, g := range gz {
+			g.abort()
 		}
 	}()
 	ended := false
@@ -395,21 +482,30 @@ func PumpFramed(ctx context.Context, s *Session, write func([]byte) error) (int,
 		}
 		switch rec.kind {
 		case 'Z':
-			gz = newGunzip(write)
-		case 'D':
-			if gz != nil {
-				err = gz.feed(rec.data)
-			} else {
-				err = write(rec.data)
+			gzipped = true
+		case 'D', 'R':
+			stream := Stdout
+			if rec.kind == 'R' {
+				stream = Stderr
 			}
+			if !gzipped {
+				err = write(stream, rec.data)
+				break
+			}
+			if gz[stream] == nil {
+				gz[stream] = newGunzip(func(b []byte) error { return write(stream, b) })
+			}
+			err = gz[stream].feed(rec.data)
 		case 'E':
 			ended = true
-			if gz != nil {
-				err = gz.finish()
-				gz = nil
-				if err == io.ErrUnexpectedEOF {
-					err = dsm.Errorf("%s: exec output ended mid-gzip stream", s.Container)
+			for stream, g := range gz {
+				if ferr := g.finish(); ferr != nil && err == nil {
+					err = ferr
+					if ferr == io.ErrUnexpectedEOF {
+						err = dsm.Errorf("%s: exec output ended mid-gzip stream", s.Container)
+					}
 				}
+				delete(gz, stream)
 			}
 		case 'S':
 			if !ended {

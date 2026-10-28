@@ -3,6 +3,7 @@ package terminal
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,13 @@ func TestCommandsMatchGolden(t *testing.T) {
 		"unframed":             CommandFor(argv, Options{Unframed: true}),
 		"join":                 Join(argv),
 	}
+	if os.Getenv("UPDATE_GOLDEN") == "1" { // after a deliberate change to the scripts
+		out, _ := json.MarshalIndent(got, "", "  ")
+		if err := os.WriteFile("testdata/golden.json", append(out, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	for name, want := range golden {
 		if got[name] != want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got[name], want)
@@ -61,7 +69,45 @@ func TestExitFilter(t *testing.T) {
 }
 
 func rec(kind byte, seq, n int, hexdata string) string {
+	if kind == 'D' || kind == 'R' {
+		data, _ := hex.DecodeString(hexdata)
+		return fmt.Sprintf("\x1e%c %d %d %s %d\n", kind, seq, n, hexdata, fletcher16(data))
+	}
 	return fmt.Sprintf("\x1e%c %d %d %s\n", kind, seq, n, hexdata)
+}
+
+// The relay can split a record into several pieces and reorder them. Swapped pieces from
+// the middle are all hex, so without the checksum they'd still look like a record, and
+// the bytes would come out in the wrong order with nothing said.
+func TestDeframerMiddlePiecesSwapped(t *testing.T) {
+	data := []byte("the quick brown fox jumps over the lazy dog")
+	whole := rec('D', 0, len(data), hex.EncodeToString(data))
+	// head | mid1 | mid2 | tail, arriving head, mid2, mid1, tail
+	head, mid1, mid2, tail := whole[:12], whole[12:40], whole[40:70], whole[70:]
+	d := &deframer{}
+	var got *frame
+	for _, piece := range []string{head, mid2, mid1, tail} {
+		r, err := d.feed(piece)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r != nil {
+			got = r
+		}
+	}
+	if got == nil || string(got.data) != string(data) {
+		t.Fatalf("got %q, want %q", got.data, data)
+	}
+}
+
+func TestFletcher16(t *testing.T) {
+	// Fletcher-16 of "abcde" is 0xC8F0; swapping two bytes changes it.
+	if got := fletcher16([]byte("abcde")); got != 0xC8F0 {
+		t.Errorf("fletcher16(abcde) = %#x, want 0xc8f0", got)
+	}
+	if fletcher16([]byte("ab")) == fletcher16([]byte("ba")) {
+		t.Error("order doesn't change the checksum")
+	}
 }
 
 func TestDeframerReordered(t *testing.T) {
@@ -155,5 +201,34 @@ func TestTruthy(t *testing.T) {
 		if truthy(json.RawMessage(raw)) != want {
 			t.Errorf("truthy(%s) != %v", raw, want)
 		}
+	}
+}
+
+// Many small pieces, a few out of place: what the NAS's relay does to a full record.
+func TestDeframerManyPieces(t *testing.T) {
+	data := make([]byte, 1024)
+	for i := range data {
+		data[i] = byte(i * 7)
+	}
+	whole := rec('D', 0, len(data), hex.EncodeToString(data))
+	var pieces []string
+	for i := 0; i < len(whole); i += len(whole)/10 + 1 {
+		pieces = append(pieces, whole[i:min(i+len(whole)/10+1, len(whole))])
+	}
+	pieces[3], pieces[4] = pieces[4], pieces[3] // two middle pieces swapped
+	pieces[7], pieces[8] = pieces[8], pieces[7]
+	d := &deframer{}
+	var got *frame
+	for _, piece := range pieces {
+		r, err := d.feed(piece)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r != nil {
+			got = r
+		}
+	}
+	if got == nil || string(got.data) != string(data) {
+		t.Fatalf("%d pieces: record not put back together", len(pieces))
 	}
 }
