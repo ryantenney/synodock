@@ -130,6 +130,22 @@ var commands = []*command{
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.StringVarP(&o.output, "output", "o", "", "write to this file (mode 0600), not stdout")
 		}, positional: one},
+	{group: "container", name: "create", opts: "--profile FILE [--start]", short: "create a standalone container from a profile (the JSON container export writes)",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.file, "profile", "", "the profile file")
+			fs.BoolVar(&o.start, "start", false, "start it at once")
+		}, positional: func(o *options, rest []string) bool { return len(rest) == 0 && o.file != "" }},
+	{group: "container", name: "update", opts: "--profile FILE", args: "NAME",
+		short: "apply a profile (the JSON container export writes) to a container; its name in the profile can rename it",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.file, "profile", "", "the profile file")
+		}, positional: func(o *options, rest []string) bool {
+			if len(rest) != 1 || o.file == "" {
+				return false
+			}
+			o.name = rest[0]
+			return true
+		}},
 	{group: "container", name: "exec", opts: "[-i] [-t] [-d]", args: "NAME [--] COMMAND...",
 		short: "run a command in a running container", commandArgs: true,
 		note: "Runs through Container Manager's Terminal: always on a TTY, as the container's default user, so stderr comes back with stdout.",

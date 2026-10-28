@@ -76,6 +76,7 @@ type options struct {
 	keepOld      bool          // project deploy: keep the images the deploy replaces
 	timeout      time.Duration // project deploy: how long to wait for healthy
 	format       string        // events export: csv or html
+	start        bool          // container create: start it at once
 	output       string        // events export: write to this file, not stdout
 	registry     string        // image pull: the registry URL
 	user         string        // image pull: the registry account
@@ -203,6 +204,10 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return projectDeploy(client, o)
 	case "container export":
 		return 0, containerExport(client, o)
+	case "container create":
+		return 0, containerCreate(client, o)
+	case "container update":
+		return 0, containerUpdate(client, o)
 	case "registry ls", "registry add", "registry rm", "registry use", "registry search", "registry tags":
 		return registryCommand(client, o)
 	case "container exec":
