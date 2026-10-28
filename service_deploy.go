@@ -87,11 +87,11 @@ func serviceDeploy(client *dsm.Client, o options) (int, error) {
 	var reg *dsm.RegistryAuth
 	var repo, tag, target string
 	if len(o.pulls) == 1 {
-		if reg, err = client.Registry(o.registry, o.user); err != nil {
+		if reg, err = client.Registry(o.registry, o.user, o.registryPull); err != nil {
 			return 0, err
 		}
 		repo, tag = splitRef(o.pulls[0])
-		target = reg.Host + "/" + repo + ":" + tag
+		target = reg.PullHost + "/" + repo + ":" + tag
 		if newID, err = dsm.RegistryImageID(reg.URL, repo, tag, reg.User, reg.Password); err != nil {
 			return 0, err
 		}
@@ -101,7 +101,7 @@ func serviceDeploy(client *dsm.Client, o options) (int, error) {
 		if target != targetRef {
 			problems = append(problems, fmt.Sprintf("%s runs %s, not %s", o.service, targetRef, target))
 		}
-		source = fmt.Sprintf("pull   %s (%s) from %s", target, newID, reg.URL)
+		source = fmt.Sprintf("pull   %s (%s) from %s", target, newID, reg.PullURL)
 	} else {
 		tarPath := o.images[0]
 		folder = strings.TrimSuffix(o.folder, "/")
@@ -284,7 +284,7 @@ func serviceDeploy(client *dsm.Client, o options) (int, error) {
 	// --- while still up ---
 	if reg != nil {
 		fmt.Fprintf(os.Stderr, "pulling %s\n", target)
-		if err := client.ImagePull(reg.URL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
+		if err := client.ImagePull(reg.PullURL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
 			return 1, err
 		}
 		if err := client.CheckTags(map[string]string{target: newID}); err != nil {

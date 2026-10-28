@@ -29,6 +29,7 @@ type Config struct {
 	// The registry project deploy --pull and image pull use when no --registry is given:
 	// its URL, its account, and a command that prints its password.
 	Registry                string
+	RegistryPull            string // where the NAS pulls from, when that differs (default: Registry)
 	RegistryUser            string
 	RegistryPasswordCommand string
 }
@@ -56,6 +57,7 @@ type settings struct {
 	IdleExit        string `toml:"idle_exit"`
 
 	Registry                string `toml:"registry"`
+	RegistryPull            string `toml:"registry_pull"`
 	RegistryUser            string `toml:"registry_user"`
 	RegistryPasswordCommand string `toml:"registry_password_command"`
 }
@@ -71,6 +73,7 @@ type configFile struct {
 	NAS             map[string]settings `toml:"nas"`
 
 	Registry                string `toml:"registry"`
+	RegistryPull            string `toml:"registry_pull"`
 	RegistryUser            string `toml:"registry_user"`
 	RegistryPasswordCommand string `toml:"registry_password_command"`
 }
@@ -169,6 +172,7 @@ func envSettings() *Config {
 		idleExit:        os.Getenv("SYNODOCK_IDLE_EXIT"),
 
 		Registry:                os.Getenv("SYNODOCK_REGISTRY"),
+		RegistryPull:            os.Getenv("SYNODOCK_REGISTRY_PULL"),
 		RegistryUser:            os.Getenv("SYNODOCK_REGISTRY_USER"),
 		RegistryPasswordCommand: os.Getenv("SYNODOCK_REGISTRY_PASSWORD_COMMAND"),
 	}
@@ -184,6 +188,7 @@ func (f *configFile) unnamed() *Config {
 	c.OTPCommand = firstOf(c.OTPCommand, f.OTPCommand)
 	c.idleExit = firstOf(c.idleExit, f.IdleExit)
 	c.Registry = firstOf(c.Registry, f.Registry)
+	c.RegistryPull = firstOf(c.RegistryPull, f.RegistryPull)
 	c.RegistryUser = firstOf(c.RegistryUser, f.RegistryUser)
 	c.RegistryPasswordCommand = firstOf(c.RegistryPasswordCommand, f.RegistryPasswordCommand)
 	return c
@@ -200,7 +205,7 @@ func (f *configFile) profile(name, chosenBy string) (*Config, error) {
 	}
 	return &Config{Name: name, URL: p.URL, User: p.User, Keychain: firstOf(p.Keychain, "synodock"),
 		PasswordCommand: p.PasswordCommand, OTPCommand: p.OTPCommand, idleExit: p.IdleExit,
-		Registry: p.Registry, RegistryUser: p.RegistryUser, RegistryPasswordCommand: p.RegistryPasswordCommand}, nil
+		Registry: p.Registry, RegistryPull: p.RegistryPull, RegistryUser: p.RegistryUser, RegistryPasswordCommand: p.RegistryPasswordCommand}, nil
 }
 
 func (f *configFile) names() []string {

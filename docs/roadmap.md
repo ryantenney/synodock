@@ -105,8 +105,6 @@ the fixes are in commits dbf38a3 through 3862535. Still open:
   as dsm.py did (its `restart proxy` worked); not run separately here.
 - **The session id in upload URLs.** It's out of error messages now, but the NAS's
   own web access log still sees it. Sending it as a cookie needs a live test.
-- **A registry reachable at different addresses** from the Mac and the NAS (dsm.py's
-  `DSM_REGISTRY_PULL`) is dsm.py-only.
 
 `--service` and an end-to-end deploy test have since landed: `project deploy --service`
 replaces one container while the rest keeps running, blocked by the same checks as dsm.py

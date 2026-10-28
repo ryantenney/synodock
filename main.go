@@ -79,6 +79,7 @@ type options struct {
 	start        bool          // container create: start it at once
 	pulls        []string      // project deploy: registry images to pull (repeatable)
 	service      string        // project deploy: replace only this service's container
+	registryPull string        // project deploy, image pull: where the NAS pulls from
 	output       string        // events export: write to this file, not stdout
 	registry     string        // image pull: the registry URL
 	user         string        // image pull: the registry account

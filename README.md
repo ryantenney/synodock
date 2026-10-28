@@ -53,6 +53,7 @@ user = "docker"
 | Idle exit | `SYNODOCK_IDLE_EXIT` | `idle_exit` | how long `serve` waits idle before exiting, e.g. `"30m"`; `"0"` never; default 15m when started on demand |
 | Keychain service (macOS) | `SYNODOCK_KEYCHAIN` | `keychain` | default `synodock`; account = `user@host`, else the user |
 | Registry | `SYNODOCK_REGISTRY` | `registry` | for `project deploy --pull` and `image pull`, e.g. `"https://registry.example.com"`; `--registry` overrides |
+| Registry pull address | `SYNODOCK_REGISTRY_PULL` | `registry_pull` | where the NAS pulls from when it isn't `registry` (its loopback port, say); images are named after it; `--registry-pull` overrides |
 | Registry account | `SYNODOCK_REGISTRY_USER` | `registry_user` | `--user` overrides |
 | Registry password | `SYNODOCK_REGISTRY_PASSWORD` | | else `registry_password_command` |
 | Registry password command | `SYNODOCK_REGISTRY_PASSWORD_COMMAND` | `registry_password_command` | prints the registry password |

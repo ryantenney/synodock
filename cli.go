@@ -77,6 +77,7 @@ func deployFlags(deploy bool) func(fs *pflag.FlagSet, o *options) {
 		fs.StringArrayVar(&o.pulls, "pull", nil, "a registry image, REPO[:TAG], to pull (repeatable)")
 		fs.StringVar(&o.registry, "registry", "", "the registry's URL, for --pull (default: registry in the profile)")
 		fs.StringVar(&o.user, "user", "", "the registry account, for --pull (default: registry_user in the profile)")
+		fs.StringVar(&o.registryPull, "registry-pull", "", "where the NAS pulls from, if not --registry (default: registry_pull in the profile)")
 		fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
 		fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
 		fs.StringVar(&o.service, "service", "", "replace only this service's container (one --pull or --image); the rest keeps running")
@@ -315,6 +316,7 @@ var commands = []*command{
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.StringVar(&o.registry, "registry", "", "the registry's URL, e.g. https://registry.example.com")
 			fs.StringVar(&o.user, "user", "", "the registry account")
+			fs.StringVar(&o.registryPull, "registry-pull", "", "where the NAS pulls from, if not --registry")
 		}, positional: one},
 	{name: "login", opts: "[--otp CODE]", short: "check that the login works; with --otp, save a 2FA device token",
 		flags: func(fs *pflag.FlagSet, o *options) {

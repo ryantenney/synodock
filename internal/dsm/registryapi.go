@@ -79,10 +79,20 @@ func RegistryImageID(registryURL, repo, tag, user, password string) (string, err
 	return ShortID(digest), nil
 }
 
-// RegistryAuth is a registry to pull from and how to log in to it.
+// RegistryAuth is a registry to pull from and how to log in to it. The digest check runs
+// here, against URL; the NAS pulls from PullURL, which can be another address for the
+// same registry (its loopback port, say), and names what it pulls PullHost/repo:tag.
 type RegistryAuth struct {
 	URL, User, Password string
-	Host                string // as the NAS names images pulled from it: host[:port]
+	Host                string // URL's host[:port]
+	PullURL, PullHost   string
+}
+
+// warnPlain warns when a registry address would send the password unencrypted over a network.
+func warnPlain(u *neturl.URL) {
+	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		fmt.Fprintf(os.Stderr, "warning: %s is plain http, so the registry password goes over the network unencrypted\n", u.Redacted())
+	}
 }
 
 // RegistryPasswordEnv holds a registry password, over registry_password_command.
@@ -91,7 +101,7 @@ const RegistryPasswordEnv = "SYNODOCK_REGISTRY_PASSWORD"
 // Registry is the registry a pull uses: the URL and account given, else the profile's
 // registry and registry_user. The password is SYNODOCK_REGISTRY_PASSWORD, else what
 // registry_password_command prints.
-func (c *Client) Registry(url, user string) (*RegistryAuth, error) {
+func (c *Client) Registry(url, user, pull string) (*RegistryAuth, error) {
 	r := &RegistryAuth{URL: firstOf(url, c.Config.Registry), User: firstOf(user, c.Config.RegistryUser)}
 	if r.URL == "" || r.User == "" {
 		return nil, Errorf("no registry: pass --registry and --user, or set registry and registry_user in %s", ConfigPath())
@@ -101,8 +111,15 @@ func (c *Client) Registry(url, user string) (*RegistryAuth, error) {
 		return nil, Errorf("registry %q: want its URL, like https://registry.example.com", r.URL)
 	}
 	r.URL, r.Host = strings.TrimRight(r.URL, "/"), u.Host
-	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
-		fmt.Fprintf(os.Stderr, "warning: %s is plain http, so the registry password goes over the network unencrypted\n", r.URL)
+	warnPlain(u)
+	r.PullURL, r.PullHost = r.URL, r.Host
+	if pull = firstOf(pull, c.Config.RegistryPull); pull != "" {
+		pu, err := neturl.Parse(pull)
+		if err != nil || (pu.Scheme != "https" && pu.Scheme != "http") || pu.Host == "" {
+			return nil, Errorf("registry pull address %q: want a URL, like http://127.0.0.1:5050", pull)
+		}
+		r.PullURL, r.PullHost = strings.TrimRight(pull, "/"), pu.Host
+		warnPlain(pu)
 	}
 	if r.Password = os.Getenv(RegistryPasswordEnv); r.Password == "" && c.Config.RegistryPasswordCommand != "" {
 		if r.Password, err = c.secrets.run(c.ctx, "registry_password_command", c.Config.RegistryPasswordCommand); err != nil {

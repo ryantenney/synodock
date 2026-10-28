@@ -121,7 +121,7 @@ func imagePull(client *dsm.Client, o options) error {
 	if !found || strings.Contains(tag, "/") {
 		repo, tag = o.name, "latest"
 	}
-	reg, err := client.Registry(o.registry, o.user)
+	reg, err := client.Registry(o.registry, o.user, o.registryPull)
 	if err != nil {
 		return err
 	}
@@ -132,12 +132,12 @@ func imagePull(client *dsm.Client, o options) error {
 	if remote == "" {
 		return dsm.Errorf("%s:%s is not in %s", repo, tag, reg.URL)
 	}
-	fmt.Fprintf(os.Stderr, "pulling %s:%s from %s\n", repo, tag, reg.URL)
-	if err := client.ImagePull(reg.URL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
+	fmt.Fprintf(os.Stderr, "pulling %s:%s from %s\n", repo, tag, reg.PullURL)
+	if err := client.ImagePull(reg.PullURL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
 		return err
 	}
 	// The NAS reports a pull finished whether or not it worked; the id says.
-	target := reg.Host + "/" + repo + ":" + tag
+	target := reg.PullHost + "/" + repo + ":" + tag
 	if err := client.CheckTags(map[string]string{target: remote}); err != nil {
 		return dsm.Errorf("pull of %s didn't land: %v", target, err)
 	}

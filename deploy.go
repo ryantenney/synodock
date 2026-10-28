@@ -56,7 +56,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	folder := strings.TrimSuffix(o.folder, "/")
 	var reg *dsm.RegistryAuth
 	if len(o.pulls) > 0 {
-		if reg, err = client.Registry(o.registry, o.user); err != nil {
+		if reg, err = client.Registry(o.registry, o.user, o.registryPull); err != nil {
 			return 0, err
 		}
 	}
@@ -127,7 +127,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	var pulls []deployPull
 	for _, ref := range o.pulls {
 		repo, tag := splitRef(ref)
-		target := reg.Host + "/" + repo + ":" + tag
+		target := reg.PullHost + "/" + repo + ":" + tag
 		remote, err := dsm.RegistryImageID(reg.URL, repo, tag, reg.User, reg.Password)
 		if err != nil {
 			return 0, err
@@ -187,7 +187,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 		if pl.current {
 			fmt.Printf("  skip   %s: already the registry's image (%s)\n", pl.target, pl.remote)
 		} else {
-			fmt.Printf("  pull   %s (%s) from %s\n", pl.target, pl.remote, reg.URL)
+			fmt.Printf("  pull   %s (%s) from %s\n", pl.target, pl.remote, reg.PullURL)
 		}
 	}
 	oldAction := "deleted after healthy"
@@ -255,7 +255,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 
 	for _, pl := range pullNow {
 		fmt.Fprintf(os.Stderr, "pulling %s\n", pl.target)
-		if err := client.ImagePull(reg.URL, pl.repo, pl.tag, reg.User, reg.Password, time.Hour); err != nil {
+		if err := client.ImagePull(reg.PullURL, pl.repo, pl.tag, reg.User, reg.Password, time.Hour); err != nil {
 			return 1, err
 		}
 		got, err := client.ImageIDsByTag()
