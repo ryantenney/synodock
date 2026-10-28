@@ -279,6 +279,11 @@ var commands = []*command{
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.StringVar(&o.folder, "to", "", "the NAS folder; it must exist")
 		}, positional: one},
+	{group: "image", name: "upgrade", opts: "[-f]", args: "REPO",
+		short: "pull a newer REPO:latest and recreate its containers; lists them and asks first unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}, positional: one},
 	{group: "image", name: "prune", opts: "[-f]",
 		short: "delete the images no container uses; lists them, then asks for the word prune unless -f",
 		flags: func(fs *pflag.FlagSet, o *options) {

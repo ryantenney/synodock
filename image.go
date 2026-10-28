@@ -27,6 +27,8 @@ func imageCommand(client *dsm.Client, o options) (int, error) {
 		return 0, imagePull(client, o)
 	case "image save":
 		return 0, imageSave(client, o)
+	case "image upgrade":
+		return 0, imageUpgrade(client, o)
 	case "image prune":
 		return 0, imagePrune(client, o)
 	}

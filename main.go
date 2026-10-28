@@ -194,7 +194,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 	case "project ls", "project config", "project ps", "project create", "project update",
 		"project up", "project down", "project start", "project stop", "project restart", "project logs", "project rm":
 		return projectCommand(client, o)
-	case "image ls", "image rm", "image import", "image load", "image pull", "image save", "image prune":
+	case "image ls", "image rm", "image import", "image load", "image pull", "image save", "image prune", "image upgrade":
 		return imageCommand(client, o)
 	case "network ls", "network inspect", "network create", "network rm":
 		return networkCommand(client, o)

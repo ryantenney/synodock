@@ -166,3 +166,28 @@ func (c *Client) ImagePrune() error {
 	_, err := c.Call("SYNO.Docker.Image", "prune", 1, nil)
 	return err
 }
+
+// ImageUpgrade pulls a newer version of repository:latest, as the UI's Upgrade does, and
+// waits for it to finish. It returns when the NAS reports the task finished.
+func (c *Client) ImageUpgrade(repository string, wait time.Duration) error {
+	var task struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := c.CallInto(&task, "SYNO.Docker.Image", "upgrade_start", 1, Params{"repository": JS(repository)}); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		var status struct {
+			Finished bool `json:"finished"`
+		}
+		if err := c.CallInto(&status, "SYNO.Docker.Image", "upgrade_status", 1, Params{"task_id": JS(task.TaskID)}); err != nil {
+			return Errorf("upgrade of %s failed: %v", repository, err)
+		}
+		if status.Finished {
+			return nil
+		}
+	}
+	return Errorf("upgrade of %s did not finish within %s", repository, wait)
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ryantenney/synodock/internal/dsm"
 )
@@ -69,5 +70,49 @@ func imagePrune(client *dsm.Client, o options) error {
 		return err
 	}
 	fmt.Printf("pruned %d unused images\n", len(unused))
+	return nil
+}
+
+// imageUpgrade pulls a newer version of an image's tag. Whether containers that run the old
+// one get recreated is what this test is for: the UI doesn't say.
+func imageUpgrade(client *dsm.Client, o options) error {
+	repo, _ := splitRef(o.name)
+	// Upgrading recreates every container on the image: a running one is stopped, recreated
+	// and started again, and a stopped one is recreated and left stopped. Say which, and ask
+	// before any of it unless -f.
+	containers, err := client.Containers()
+	if err != nil {
+		return err
+	}
+	var running, stopped []string
+	for _, c := range containers {
+		if name := c.ImageName(); name != repo && !strings.HasPrefix(name, repo+":") {
+			continue
+		}
+		if c.Running() {
+			running = append(running, c.Name)
+		} else {
+			stopped = append(stopped, c.Name)
+		}
+	}
+	if len(running)+len(stopped) > 0 {
+		fmt.Fprintf(os.Stderr, "upgrading %s recreates %d containers (%d running, restarted; %d stopped, left stopped)\n",
+			repo, len(running)+len(stopped), len(running), len(stopped))
+		for _, n := range running {
+			fmt.Fprintf(os.Stderr, "  restarts  %s\n", n)
+		}
+		for _, n := range stopped {
+			fmt.Fprintf(os.Stderr, "  recreated %s\n", n)
+		}
+		if !o.force {
+			if err := confirmTyped(fmt.Sprintf("This recreates %d containers.", len(running)+len(stopped)), repo); err != nil {
+				return err
+			}
+		}
+	}
+	if err := client.ImageUpgrade(repo, time.Hour); err != nil {
+		return err
+	}
+	fmt.Printf("upgraded %s\n", repo)
 	return nil
 }
