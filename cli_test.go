@@ -66,6 +66,19 @@ func TestParse(t *testing.T) {
 		{[]string{"project", "up"}, "", 2, nil},
 		{[]string{"project", "up", "a", "b"}, "", 2, nil},
 		{[]string{"project", "config", "web", "extra"}, "", 2, nil},
+		{[]string{"image", "ls"}, "image ls", 0, nil},
+		{[]string{"image", "rm", "-f", "abc123"}, "image rm", 0, func(o options) bool { return o.name == "abc123" && o.force }},
+		{[]string{"image", "rm", "abc123"}, "image rm", 0, func(o options) bool { return !o.force }},
+		{[]string{"image", "import", "/docker/x.tar"}, "image import", 0, func(o options) bool { return o.file == "/docker/x.tar" }},
+		{[]string{"image", "load", "x.tar", "/docker/x/images"}, "image load", 0, func(o options) bool {
+			return o.file == "x.tar" && o.folder == "/docker/x/images"
+		}},
+		{[]string{"image", "pull", "--registry", "https://r.example", "--user", "u", "omni:1"}, "image pull", 0, func(o options) bool {
+			return o.name == "omni:1" && o.registry == "https://r.example" && o.user == "u"
+		}},
+		{[]string{"image", "load", "x.tar"}, "", 2, nil},
+		{[]string{"image", "import"}, "", 2, nil},
+		{[]string{"image", "pull", "x"}, "image pull", 0, nil}, // missing flags are checked at run time
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
-
-	"golang.org/x/term"
 
 	"github.com/ryantenney/synodock/internal/dsm"
 )
@@ -182,13 +179,8 @@ func projectRemove(client *dsm.Client, o options) error {
 		return dsm.Errorf("%s is %s; take it down first (synodock project down %s)", p.Name, p.Status, p.Name)
 	}
 	if !o.force {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return dsm.Errorf("project rm: not a terminal; pass -f to delete %s", p.Name)
-		}
-		fmt.Fprintf(os.Stderr, "This deletes %s with its containers and all its data. Type the name to confirm: ", p.Name)
-		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if strings.TrimSpace(answer) != p.Name {
-			return dsm.Errorf("not deleted")
+		if err := confirmTyped(fmt.Sprintf("This deletes %s with its containers and all its data.", p.Name), p.Name); err != nil {
+			return err
 		}
 	}
 	if err := client.ProjectDelete(p.ID); err != nil {

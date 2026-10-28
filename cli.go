@@ -52,6 +52,7 @@ var groups = []group{
 	{"container", "containers: list, logs, processes, exec"},
 	{"service", "run serve as a service launchd/systemd starts on demand"},
 	{"project", "Container Manager projects: list, config, ps, create, update, up, down, start, stop, restart"},
+	{"image", "images on the NAS: list, rm, import, load, pull"},
 }
 
 // shortcuts are top-level names for commands in a group, as docker's ps and exec.
@@ -70,6 +71,24 @@ func two(o *options, rest []string) bool {
 		return false
 	}
 	o.name, o.file = rest[0], rest[1]
+	return true
+}
+
+// onePath takes one positional argument, a file path on the NAS or here.
+func onePath(o *options, rest []string) bool {
+	if len(rest) != 1 {
+		return false
+	}
+	o.file = rest[0]
+	return true
+}
+
+// tarAndFolder takes TAR and FOLDER.
+func tarAndFolder(o *options, rest []string) bool {
+	if len(rest) != 2 {
+		return false
+	}
+	o.file, o.folder = rest[0], rest[1]
 	return true
 }
 
@@ -153,6 +172,21 @@ var commands = []*command{
 	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
 	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},
 
+	{group: "image", name: "ls", aliases: []string{"list"}, short: "images, one row per tag"},
+	{group: "image", name: "rm", opts: "[-f]", args: "ID", short: "delete an image by id; asks for the id unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}, positional: one},
+	{group: "image", name: "import", args: "PATH", short: "load a docker save tar already on the NAS", positional: onePath},
+	{group: "image", name: "load", args: "TAR FOLDER",
+		short:      "upload a docker save tar to a NAS folder and load it; the old tar there is kept as .prev.tar",
+		positional: tarAndFolder},
+	{group: "image", name: "pull", opts: "--registry URL --user NAME", args: "REPO[:TAG]",
+		short: "pull from a registry onto the NAS; the password comes from SYNODOCK_REGISTRY_PASSWORD",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.registry, "registry", "", "the registry's URL, e.g. https://registry.example.com")
+			fs.StringVar(&o.user, "user", "", "the registry account")
+		}, positional: one},
 	{name: "login", opts: "[--otp CODE]", short: "check that the login works; with --otp, save a 2FA device token",
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.StringVar(&o.otp, "otp", "", "a current code from the authenticator app")
