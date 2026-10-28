@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,7 +88,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 		t := deployTar{path: path, name: filepath.Base(path), size: st.Size(), info: info}
 		t.skipped = len(info.Tags) > 0
 		for _, tag := range info.Tags {
-			if dsm.ShortID(currentIDs[tag]) != info.ShortID {
+			if dsm.ShortID(currentIDs[tag]) != info.IDs[tag] {
 				t.skipped = false
 			}
 		}
@@ -174,7 +175,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	fmt.Printf("deploy %s (%s)\n", p.Name, p.Status)
 	for _, t := range tars {
 		if t.skipped {
-			fmt.Printf("  skip   %s: %s already is this image (%s)\n", t.name, strings.Join(t.info.Tags, ", "), t.info.ShortID)
+			fmt.Printf("  skip   %s: %s already loaded\n", t.name, strings.Join(t.info.Tags, ", "))
 		}
 	}
 	for _, t := range uploads {
@@ -238,28 +239,15 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	}
 	for _, t := range uploads {
 		fmt.Fprintf(os.Stderr, "loading %s\n", t.name)
-		expect := map[string]string{}
-		for _, tag := range t.info.Tags {
-			expect[tag] = t.info.ShortID
-		}
-		if err := client.ImageImport(folder+"/"+t.name, expect, 30*time.Minute); err != nil {
+		if err := client.ImageImport(folder+"/"+t.name, t.info.IDs, 30*time.Minute); err != nil {
 			return 1, err
 		}
 	}
 	// A load can report success without moving a tag; check every tag now names the tar's
 	// image, as the pulls below do, before anything goes down.
-	if len(uploads) > 0 {
-		got, err := client.ImageIDsByTag()
-		if err != nil {
-			return 1, err
-		}
-		for _, t := range uploads {
-			for _, tag := range t.info.Tags {
-				if dsm.ShortID(got[tag]) != t.info.ShortID {
-					return 1, dsm.Errorf("after loading %s, %s is %s, expected %s; the project is still up",
-						t.name, tag, dsm.ShortID(got[tag]), t.info.ShortID)
-				}
-			}
+	for _, t := range uploads {
+		if err := client.CheckTags(t.info.IDs); err != nil {
+			return 1, dsm.Errorf("after loading %s: %v; the project is still up", t.name, err)
 		}
 	}
 
@@ -294,15 +282,8 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for tag, id := range replaced {
-		if o.keepOld || newIDs[tag] == id {
-			continue
-		}
-		if err := client.ImageDeleteID(id); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not delete old image %s: %v\n", dsm.ShortID(id), err)
-			continue
-		}
-		fmt.Printf("deleted old image %s %s\n", tag, dsm.ShortID(id))
+	if !o.keepOld {
+		deleteReplaced(client, replaced, newIDs)
 	}
 	return 0, nil
 }
@@ -414,4 +395,45 @@ func containerReady(c *dsm.ProjectContainer) (ready bool, status string, err err
 		return false, h, nil
 	}
 	return false, c.State.Status, nil
+}
+
+// oldImagesToDelete is the images a deploy replaced and can delete: each old id once, and
+// only if no tag points at it any more. Deleting by id removes every tag on the image, so
+// an old image that still carries another tag (app:1.4 beside the app:latest that moved)
+// is kept, with the tags that hold it.
+func oldImagesToDelete(replaced, now map[string]string) (del map[string][]string, kept map[string][]string) {
+	del, kept = map[string][]string{}, map[string][]string{}
+	for tag, id := range replaced {
+		if now[tag] == id { // the tag didn't move; nothing replaced it
+			continue
+		}
+		del[id] = append(del[id], tag)
+	}
+	for id := range del {
+		for tag, other := range now {
+			if other == id {
+				kept[id] = append(kept[id], tag)
+			}
+		}
+		if len(kept[id]) > 0 {
+			delete(del, id)
+		}
+	}
+	return del, kept
+}
+
+func deleteReplaced(client *dsm.Client, replaced, now map[string]string) {
+	del, kept := oldImagesToDelete(replaced, now)
+	for id, tags := range kept {
+		sort.Strings(tags)
+		fmt.Printf("kept old image %s: still tagged %s\n", dsm.ShortID(id), strings.Join(tags, ", "))
+	}
+	for id, tags := range del {
+		sort.Strings(tags)
+		if err := client.ImageDeleteID(id); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not delete old image %s: %v\n", dsm.ShortID(id), err)
+			continue
+		}
+		fmt.Printf("deleted old image %s (was %s)\n", dsm.ShortID(id), strings.Join(tags, ", "))
+	}
 }

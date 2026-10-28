@@ -67,3 +67,37 @@ func TestReadImageTarRejectsOtherFiles(t *testing.T) {
 		t.Fatal("expected an error for a file that isn't a docker save tar")
 	}
 }
+
+// docker save a b: two images in one tar, each tag with its own image's id.
+func TestReadImageTarSeveralImages(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	manifest := []byte(`[{"Config":"blobs/sha256/aaaaaaaaaaaaaaaa","RepoTags":["omni/app:1","omni/app:latest"]},` +
+		`{"Config":"bbbbbbbbbbbbbbbb.json","RepoTags":["omni/worker:1"]}]`)
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(manifest))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "two.tar")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := ReadImageTar(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"omni/app:1": "aaaaaaaaaaaa", "omni/app:latest": "aaaaaaaaaaaa", "omni/worker:1": "bbbbbbbbbbbb"}
+	for tag, id := range want {
+		if info.IDs[tag] != id {
+			t.Errorf("%s: id %q, want %q", tag, info.IDs[tag], id)
+		}
+	}
+	if len(info.Tags) != 3 {
+		t.Errorf("tags %v, want 3", info.Tags)
+	}
+}

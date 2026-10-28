@@ -93,14 +93,13 @@ func imageLoad(client *dsm.Client, o options) error {
 	if moved != "" {
 		fmt.Fprintf(os.Stderr, "kept previous as %s\n", moved)
 	}
-	expect := map[string]string{}
-	for _, tag := range info.Tags {
-		expect[tag] = info.ShortID
-	}
 	nasPath := o.folder + "/" + filepath.Base(o.file)
 	fmt.Fprintf(os.Stderr, "importing %s\n", nasPath)
-	if err := client.ImageImport(nasPath, expect, 30*time.Minute); err != nil {
+	if err := client.ImageImport(nasPath, info.IDs, 30*time.Minute); err != nil {
 		return err
+	}
+	if err := client.CheckTags(info.IDs); err != nil {
+		return dsm.Errorf("imported %s, but %v", nasPath, err)
 	}
 	fmt.Printf("loaded %s\n", strings.Join(info.Tags, ", "))
 	return nil

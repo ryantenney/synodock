@@ -9,15 +9,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 // ImageTar is what a `docker save` tar holds, read from its manifest: the tags it
-// loads, and the short id of the image (its config blob's digest).
+// loads, and for each tag the short id of its image (its config blob's digest). A tar
+// can hold several images (docker save a b), so the id is per tag.
 type ImageTar struct {
 	Tags    []string
-	ShortID string
+	IDs     map[string]string // tag -> short id
+	ShortID string            // the first image's, for messages
 }
 
 // ReadImageTar reads the manifest of a `docker save` tar, plain or gzipped.
@@ -56,14 +59,17 @@ func ReadImageTar(path string) (ImageTar, error) {
 		if err := json.NewDecoder(tr).Decode(&manifest); err != nil {
 			return ImageTar{}, fmt.Errorf("%s: manifest.json: %w", path, err)
 		}
-		var out ImageTar
-		for _, entry := range manifest {
-			out.Tags = append(out.Tags, entry.RepoTags...)
-		}
-		if len(manifest) > 0 {
-			config := manifest[0].Config
-			config = config[strings.LastIndex(config, "/")+1:]
-			out.ShortID = ShortID(strings.TrimSuffix(config, ".json"))
+		out := ImageTar{IDs: map[string]string{}}
+		for i, entry := range manifest {
+			config := entry.Config[strings.LastIndex(entry.Config, "/")+1:]
+			id := ShortID(strings.TrimSuffix(config, ".json"))
+			if i == 0 {
+				out.ShortID = id
+			}
+			for _, tag := range entry.RepoTags {
+				out.Tags = append(out.Tags, tag)
+				out.IDs[tag] = id
+			}
 		}
 		return out, nil
 	}
@@ -190,4 +196,27 @@ func (c *Client) ImageUpgrade(repository string, wait time.Duration) error {
 		}
 	}
 	return Errorf("upgrade of %s did not finish within %s", repository, wait)
+}
+
+// CheckTags says whether every tag now names the image it should (tag -> short id). A
+// load or import can report success without moving a tag, so callers check afterwards.
+func (c *Client) CheckTags(want map[string]string) error {
+	now, err := c.ImageIDsByTag()
+	if err != nil {
+		return err
+	}
+	tags := make([]string, 0, len(want))
+	for tag := range want {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	for _, tag := range tags {
+		if got := ShortID(now[tag]); got != want[tag] {
+			if got == "" {
+				got = "missing"
+			}
+			return Errorf("%s is %s, expected %s", tag, got, want[tag])
+		}
+	}
+	return nil
 }

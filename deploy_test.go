@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ryantenney/synodock/internal/dsm"
@@ -42,5 +43,21 @@ func TestContainerReady(t *testing.T) {
 			t.Errorf("%s: ready=%v status=%q err=%v; want ready=%v status=%q failed=%v",
 				tc.name, ready, status, err, tc.ready, tc.status, tc.failed)
 		}
+	}
+}
+
+func TestOldImagesToDelete(t *testing.T) {
+	replaced := map[string]string{"app:latest": "X", "app:stable": "X", "worker:latest": "Y", "cache:1": "Z"}
+	now := map[string]string{
+		"app:latest": "N", "app:stable": "N", // both tags of X moved
+		"worker:latest": "M", "worker:1.4": "Y", // Y still carries 1.4
+		"cache:1": "Z", // didn't move
+	}
+	del, kept := oldImagesToDelete(replaced, now)
+	if len(del) != 1 || len(del["X"]) != 2 {
+		t.Errorf("delete %v, want only X (once, for both of its tags)", del)
+	}
+	if !reflect.DeepEqual(kept, map[string][]string{"Y": {"worker:1.4"}}) {
+		t.Errorf("kept %v, want Y held by worker:1.4", kept)
 	}
 }
