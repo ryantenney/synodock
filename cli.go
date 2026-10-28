@@ -125,6 +125,11 @@ var commands = []*command{
 			fs.StringVarP(&o.keyword, "keyword", "k", "", "only lines containing this")
 		}, positional: one},
 	{group: "container", name: "top", args: "NAME", short: "a container's processes", positional: one},
+	{group: "container", name: "export", opts: "[-o FILE]", args: "NAME",
+		short: "the container's settings as Container Manager exports them (JSON; includes environment variables)",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVarP(&o.output, "output", "o", "", "write to this file (mode 0600), not stdout")
+		}, positional: one},
 	{group: "container", name: "exec", opts: "[-i] [-t] [-d]", args: "NAME [--] COMMAND...",
 		short: "run a command in a running container", commandArgs: true,
 		note: "Runs through Container Manager's Terminal: always on a TTY, as the container's default user, so stderr comes back with stdout.",

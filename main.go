@@ -201,6 +201,8 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return eventsCommand(client, o)
 	case "project deploy":
 		return projectDeploy(client, o)
+	case "container export":
+		return 0, containerExport(client, o)
 	case "registry ls", "registry add", "registry rm", "registry use", "registry search", "registry tags":
 		return registryCommand(client, o)
 	case "container exec":

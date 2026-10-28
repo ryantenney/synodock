@@ -820,16 +820,15 @@ func (c *Client) Download(api, method string, version int, params Params) ([]byt
 	if err != nil {
 		return nil, "", err
 	}
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+	// A file comes with a Content-Disposition attachment, whatever its type (a profile is
+	// JSON too). Without one, a JSON answer is an error envelope.
+	disposition, params, _ := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
+	if disposition != "attachment" {
 		var env envelope
 		if err := json.Unmarshal(body, &env); err != nil {
 			return nil, "", fmt.Errorf("%s.%s: %w", api, method, err)
 		}
 		return nil, "", &Error{Msg: fmt.Sprintf("%s.%s failed: %s", api, method, env.Error), Code: env.code()}
 	}
-	name := ""
-	if _, p, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
-		name = p["filename"]
-	}
-	return body, name, nil
+	return body, params["filename"], nil
 }
