@@ -265,8 +265,13 @@ func waitHealthy(client *dsm.Client, id string, timeout time.Duration, expected 
 				continue
 			}
 			oneShot := c.HostConfig.RestartPolicy.Name == "" || c.HostConfig.RestartPolicy.Name == "no"
-			if c.State.Status == "exited" && c.State.ExitCode == 0 && oneShot {
-				continue
+			if c.State.Status == "exited" && oneShot {
+				// A one-shot that exited 0 is done. Anything else that exited without a restart
+				// policy won't come back, so waiting would only time out.
+				if c.State.ExitCode == 0 {
+					continue
+				}
+				return fmt.Errorf("%s exited with status %d and won't restart", name, c.State.ExitCode)
 			}
 			if c.State.Status != "running" || (c.Health() != "" && c.Health() != "healthy") {
 				status := c.Health()

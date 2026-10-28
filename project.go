@@ -171,7 +171,7 @@ func projectLogs(client *dsm.Client, name string) error {
 // projectRemove deletes a project with its containers and data. It refuses a running
 // project, and asks for the name typed back unless -f, since nothing brings the data back.
 func projectRemove(client *dsm.Client, o options) error {
-	p, err := client.ProjectByName(o.name)
+	p, err := client.ProjectListed(o.name)
 	if err != nil {
 		return err
 	}

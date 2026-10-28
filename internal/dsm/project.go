@@ -93,6 +93,21 @@ func (c *Client) ProjectByName(nameOrID string) (*Project, error) {
 	return nil, Errorf("no project named %q", nameOrID)
 }
 
+// ProjectListed is the project called name (or with that id) as the list has it: no
+// compose file or containers, so it still works for a project whose folder is gone.
+func (c *Client) ProjectListed(nameOrID string) (*Project, error) {
+	projects, err := c.Projects()
+	if err != nil {
+		return nil, err
+	}
+	for i := range projects {
+		if projects[i].Name == nameOrID || projects[i].ID == nameOrID {
+			return &projects[i], nil
+		}
+	}
+	return nil, Errorf("no project named %q", nameOrID)
+}
+
 // ProjectUpdate replaces a project's compose file. Container Manager accepts this for a
 // running project too; callers keep its rule and check first.
 func (c *Client) ProjectUpdate(id, content string) error {
