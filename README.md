@@ -192,6 +192,14 @@ unless `--no-gzip` or `SYNODOCK_GZIP=0`. A container without it works as before.
 $ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o synodock-agent ./cmd/synodock-agent
 ```
 
+Or the C version in `agent/` (same protocol; static with musl, about 92 KB with zlib,
+51 KB without, which never compresses), built in an Alpine container:
+
+```console
+$ agent/build.sh            # build/synodock-agent-c-{amd64,arm64}
+$ ZLIB=0 agent/build.sh     # build/synodock-agent-c-nozlib-{amd64,arm64}
+```
+
 Put it in a NAS folder and mount it read-only into the services you exec into, in their
 compose file; updating it is replacing one file:
 
