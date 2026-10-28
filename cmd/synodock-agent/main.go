@@ -7,6 +7,8 @@
 // keeps working as before. It talks to synodock over its tty, through the NAS relay,
 // in the records of package wire: several records in flight instead of one, base64
 // instead of hex, and a CRC on each, since the relay cuts and reorders what it reads.
+// With SD_GZIP=1 (synodock's default) and a go-ahead that says synodock can take it,
+// each stream is one gzip stream, flushed after every read so slow output stays live.
 //
 //	synodock-agent run COMMAND [ARG]...
 //
@@ -17,12 +19,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -61,13 +66,16 @@ func run(argv []string) int {
 	if _, err := io.WriteString(os.Stdout, wire.Hello); err != nil {
 		return 1
 	}
-	if _, err := readLine(tty); err != nil { // synodock's go-ahead
+	goAhead, err := readLine(tty)
+	if err != nil {
 		return 1
 	}
+	compress := os.Getenv("SD_GZIP") == "1" && strings.Contains(goAhead, "z")
 
 	s := &sender{}
 	s.cond = sync.NewCond(&s.mu)
 	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = commandEnv()
 	stdout, err1 := cmd.StdoutPipe()
 	stderr, err2 := cmd.StderrPipe()
 	if err := errors.Join(err1, err2); err != nil {
@@ -82,13 +90,17 @@ func run(argv []string) int {
 	}
 	go s.readAcks(tty, cmd)
 
+	readSize := wire.MaxPayload
+	if compress {
+		readSize = 16 << 10 // compresses to a few records
+	}
 	chunks := make(chan chunk, window)
 	var readers sync.WaitGroup
 	for stream, r := range map[int]io.Reader{1: stdout, 2: stderr} {
 		readers.Add(1)
 		go func() {
 			defer readers.Done()
-			buf := make([]byte, wire.MaxPayload)
+			buf := make([]byte, readSize)
 			for {
 				n, err := r.Read(buf) // what the pipe holds now: slow output stays live
 				if n > 0 {
@@ -101,10 +113,73 @@ func run(argv []string) int {
 		}()
 	}
 	go func() { readers.Wait(); close(chunks) }()
+	if !compress {
+		for c := range chunks {
+			s.send(wire.Record{Kind: 'D', Stream: c.stream, Payload: c.data})
+		}
+		return s.exit(status(cmd.Wait()))
+	}
+	z := map[int]*zstream{}
 	for c := range chunks {
-		s.send(wire.Record{Kind: 'D', Stream: c.stream, Payload: c.data})
+		if z[c.stream] == nil {
+			z[c.stream] = newZstream()
+		}
+		s.sendZ(c.stream, z[c.stream].flush(c.data))
+	}
+	for stream, zs := range z {
+		s.sendZ(stream, zs.close()) // the trailer: its CRC checks the whole stream
 	}
 	return s.exit(status(cmd.Wait()))
+}
+
+// zstream is one output stream's gzip stream.
+type zstream struct {
+	buf bytes.Buffer
+	w   *gzip.Writer
+}
+
+func newZstream() *zstream {
+	z := &zstream{}
+	z.w, _ = gzip.NewWriterLevel(&z.buf, gzip.BestSpeed)
+	return z
+}
+
+// flush compresses data and returns everything needed to decompress it.
+func (z *zstream) flush(data []byte) []byte {
+	_, _ = z.w.Write(data)
+	_ = z.w.Flush()
+	return z.take()
+}
+
+func (z *zstream) close() []byte {
+	_ = z.w.Close()
+	return z.take()
+}
+
+func (z *zstream) take() []byte {
+	out := bytes.Clone(z.buf.Bytes())
+	z.buf.Reset()
+	return out
+}
+
+// sendZ sends compressed bytes as C records.
+func (s *sender) sendZ(stream int, data []byte) {
+	for len(data) > 0 {
+		n := min(len(data), wire.MaxPayload)
+		s.send(wire.Record{Kind: 'C', Stream: stream, Payload: data[:n]})
+		data = data[n:]
+	}
+}
+
+// commandEnv is ours without the framing script's switches.
+func commandEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "SD_GZIP=") && !strings.HasPrefix(kv, "SD_AGENT=") {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // sender numbers records and keeps no more than window of them unacknowledged.

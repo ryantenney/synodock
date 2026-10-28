@@ -16,6 +16,12 @@ import (
 // anywhere, put back in sequence, acknowledged as it arrives so the agent keeps sending.
 func pumpAgent(ctx context.Context, s *Session, write func(stream int, data []byte) error) (int, error) {
 	d := wire.NewDecoder()
+	gz := map[int]*gunzip{} // C records: one gzip stream per output stream
+	defer func() {
+		for _, g := range gz {
+			g.abort()
+		}
+	}()
 	acked := 0
 	status, exited := 0, false
 	last := time.Now()
@@ -41,9 +47,26 @@ func pumpAgent(ctx context.Context, s *Session, write func(stream int, data []by
 				if err := write(r.Stream, r.Payload); err != nil {
 					return 0, err
 				}
+			case 'C':
+				stream := r.Stream
+				if gz[stream] == nil {
+					gz[stream] = newGunzip(func(b []byte) error { return write(stream, b) })
+				}
+				if err := gz[stream].feed(r.Payload); err != nil {
+					return 0, err
+				}
 			case 'X':
 				status, _ = strconv.Atoi(string(r.Payload))
 				exited = true
+				for stream, g := range gz {
+					err := g.finish()
+					delete(gz, stream)
+					if err == io.ErrUnexpectedEOF {
+						return 0, dsm.Errorf("%s: exec output ended mid-gzip stream", s.Container)
+					} else if err != nil {
+						return 0, err
+					}
+				}
 			}
 		}
 		if d.Next() > acked {

@@ -15,9 +15,11 @@
 // that add up to that, and keeps the combination whose CRC (over the kind, seq, stream
 // and payload) agrees.
 //
-// Records: D = output (stream 1 stdout, 2 stderr), X = the command exited (payload: its
+// Records: D = output (stream 1 stdout, 2 stderr), C = compressed output (the stream's
+// gzip stream, in pieces; the agent sends C or D, not both), X = the command exited (payload: its
 // status; seq: the number of records before it). synodock acknowledges with "A<n>\n"
-// on the tty: every record below n has arrived.
+// on the tty: every record below n has arrived. Its go-ahead after the hello says what it
+// can take: "z", C records.
 package wire
 
 import (

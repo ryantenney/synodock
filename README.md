@@ -185,7 +185,8 @@ the shell framing script when it's in the container at `/opt/synodock/agent`. It
 several records in flight instead of one, so output comes back several times faster
 (on the NAS: `seq 100000` in 1.3 s instead of 2.4 s, 256 KB of random data in 1.1 s
 instead of 2.7 s, both including about 1 s of login), and it needs nothing in the image
-(no `sh`, `dd`, `od` or `awk`). A container without it works as before.
+(no `sh`, `dd`, `od` or `awk`). It compresses output as the script does with gzip,
+unless `--no-gzip` or `SYNODOCK_GZIP=0`. A container without it works as before.
 
 ```console
 $ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o synodock-agent ./cmd/synodock-agent

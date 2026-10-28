@@ -533,7 +533,7 @@ func PumpFramed(ctx context.Context, s *Session, write func(stream int, data []b
 			if rec.n != 2 {
 				return 0, dsm.Errorf("%s: synodock-agent speaks protocol %d, this synodock 2", s.Container, rec.n)
 			}
-			if err := s.Send("\n"); err != nil {
+			if err := s.Send("z\n"); err != nil { // we take C records
 				return 0, err
 			}
 			return pumpAgent(ctx, s, write)

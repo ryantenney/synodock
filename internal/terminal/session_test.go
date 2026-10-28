@@ -403,8 +403,15 @@ func TestAgentRunsTheCommand(t *testing.T) {
 	if code != 127 || !strings.HasPrefix(string(errOut), "synodock exec: no-such-command:") {
 		t.Errorf("exit %d, stderr %q: not the agent", code, errOut)
 	}
-	out, _, code := runFramedStreams(t, client, []string{"sh", "-c", "seq 20000; exit 4"}, Options{Gzip: true})
-	if code != 4 || !strings.HasSuffix(string(out), "19999\n20000\n") {
-		t.Errorf("exit %d, %d bytes of output", code, len(out))
+	for _, gz := range []bool{true, false} {
+		out, errOut, code := runFramedStreams(t, client, []string{"sh", "-c", "seq 20000; seq 3 >&2; exit 4"}, Options{Gzip: gz})
+		if code != 4 || !strings.HasSuffix(string(out), "19999\n20000\n") || string(errOut) != "1\n2\n3\n" {
+			t.Errorf("gzip %v: exit %d, %d bytes of output, stderr %q", gz, code, len(out), errOut)
+		}
+	}
+	// The script's switches stay out of the command's environment.
+	out, _, _ := runFramedStreams(t, client, []string{"env"}, Options{Gzip: true})
+	if strings.Contains(string(out), "SD_") {
+		t.Errorf("env: %q", out)
 	}
 }
