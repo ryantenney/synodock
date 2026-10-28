@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ryantenney/synodock/internal/dsm"
 )
@@ -39,6 +41,29 @@ func containerUpdate(client *dsm.Client, o options) error {
 	}
 	if err := client.ContainerUpdate(o.name, profile); err != nil {
 		return err
+	}
+	// Container Manager's settings for an existing container cover the name, CPU priority,
+	// memory and auto-restart, and nothing else: the command is kept whatever the profile
+	// says. Read the settings back, so a command that didn't take is an error, not a success.
+	var want struct {
+		CmdV2 string `json:"cmd_v2"`
+	}
+	if err := json.Unmarshal(profile, &want); err != nil {
+		return err
+	}
+	stored, _, err := client.ContainerSettings(o.name)
+	if err != nil {
+		return err
+	}
+	var got struct {
+		CmdV2 string `json:"cmd_v2"`
+	}
+	if err := json.Unmarshal(stored, &got); err != nil {
+		return err
+	}
+	if want.CmdV2 != "" && strings.TrimSpace(want.CmdV2) != strings.TrimSpace(got.CmdV2) {
+		return dsm.Errorf("updated %s, but its command is still %q: Container Manager doesn't change the command of an existing container. "+
+			"To run a different command, make a new container with create --profile (its profile can come from export)", o.name, got.CmdV2)
 	}
 	fmt.Printf("updated container %s from %s\n", o.name, o.file)
 	return nil
