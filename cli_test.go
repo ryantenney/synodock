@@ -99,6 +99,10 @@ func TestParse(t *testing.T) {
 			return o.name == "alpine" && o.tail == 3
 		}},
 		{[]string{"registry", "tags", "library/alpine"}, "registry tags", 0, nil},
+		{[]string{"events", "ls", "-n", "20", "--level", "err", "-k", "x"}, "events ls", 0, func(o options) bool {
+			return o.tail == 20 && o.level == "err" && o.keyword == "x"
+		}},
+		{[]string{"events", "clear", "-f"}, "events clear", 0, func(o options) bool { return o.force }},
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

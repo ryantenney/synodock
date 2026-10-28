@@ -55,6 +55,7 @@ var groups = []group{
 	{"image", "images on the NAS: list, rm, import, load, pull"},
 	{"network", "Docker networks: list, inspect, create, rm"},
 	{"registry", "registries Container Manager pulls from: list, add, rm, use, search, tags"},
+	{"events", "Container Manager's own log (its Log tab): list, clear"},
 }
 
 // shortcuts are top-level names for commands in a group, as docker's ps and exec.
@@ -183,6 +184,17 @@ var commands = []*command{
 	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
 	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},
 
+	{group: "events", name: "ls", aliases: []string{"list"}, opts: "[-n N] [--level L] [-k WORD]",
+		short: "the newest events; --level is info, warn or err",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.IntVarP(&o.tail, "tail", "n", 100, "the newest N events")
+			fs.StringVar(&o.level, "level", "", "only this level: info, warn or err")
+			fs.StringVarP(&o.keyword, "keyword", "k", "", "only events containing this")
+		}},
+	{group: "events", name: "clear", opts: "[-f]", short: "empty the log; asks for the word clear unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}},
 	{group: "registry", name: "ls", aliases: []string{"list"}, short: "registries; * marks the one in use"},
 	{group: "registry", name: "add", opts: "[--user NAME]", args: "NAME URL",
 		short: "add a registry; a password comes from SYNODOCK_REGISTRY_PASSWORD",
