@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 
@@ -174,6 +175,17 @@ var commands = []*command{
 		short: "bring a stopped project up: compose build, streamed", positional: one},
 	{group: "project", name: "down", aliases: []string{"clean"}, args: "NAME",
 		short: "take a project down: compose clean (containers and network; named volumes stay)", positional: one},
+	{group: "project", name: "deploy", opts: "[--image TAR]... [--compose FILE] [--dry-run] [-y] [--keep-old-images]", args: "NAME",
+		short: "take it down, load new images, update the compose file, build, wait healthy, then clean up old images",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringArrayVar(&o.images, "image", nil, "a docker save tar to load (repeatable)")
+			fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
+			fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
+			fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and stop")
+			fs.BoolVarP(&o.yes, "yes", "y", false, "don't ask before taking the project down")
+			fs.BoolVar(&o.keepOld, "keep-old-images", false, "don't delete the images the deploy replaces")
+			fs.DurationVar(&o.timeout, "timeout", 10*time.Minute, "how long to wait for the containers to be healthy")
+		}, positional: one},
 	{group: "project", name: "logs", args: "NAME", short: "the compose output from its last action", positional: one},
 	{group: "project", name: "rm", opts: "[-f]", args: "NAME",
 		short: "delete a stopped project with its containers and data; asks for the name unless -f",

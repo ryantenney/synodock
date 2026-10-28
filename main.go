@@ -60,18 +60,23 @@ type options struct {
 	socket       string
 	verbose      bool
 	noGzip       bool
-	file         string // project create/update: the compose file
-	sharePath    string // project create: the folder, default /docker/NAME
-	outFile      string // project config: write to this file, not stdout
-	force        bool   // project rm: no confirmation
-	folder       string // image load: the NAS folder for the tar
-	subnet       string // network create
-	gateway      string // network create
-	iprange      string // network create
-	noMasquerade bool   // network create: --disable-masquerade
-	level        string // events ls: info, warn or err
-	registry     string // image pull: the registry URL
-	user         string // image pull: the registry account
+	file         string        // project create/update: the compose file
+	sharePath    string        // project create: the folder, default /docker/NAME
+	outFile      string        // project config: write to this file, not stdout
+	force        bool          // project rm: no confirmation
+	folder       string        // image load: the NAS folder for the tar
+	subnet       string        // network create
+	gateway      string        // network create
+	iprange      string        // network create
+	noMasquerade bool          // network create: --disable-masquerade
+	level        string        // events ls: info, warn or err
+	images       []string      // project deploy: image tars to load (repeatable)
+	dryRun       bool          // project deploy: print the plan and stop
+	yes          bool          // project deploy: don't ask
+	keepOld      bool          // project deploy: keep the images the deploy replaces
+	timeout      time.Duration // project deploy: how long to wait for healthy
+	registry     string        // image pull: the registry URL
+	user         string        // image pull: the registry account
 }
 
 func main() {
@@ -192,6 +197,8 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return networkCommand(client, o)
 	case "events ls", "events clear":
 		return eventsCommand(client, o)
+	case "project deploy":
+		return projectDeploy(client, o)
 	case "registry ls", "registry add", "registry rm", "registry use", "registry search", "registry tags":
 		return registryCommand(client, o)
 	case "container exec":
