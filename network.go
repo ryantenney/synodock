@@ -75,7 +75,7 @@ func networkRemove(client *dsm.Client, o options) error {
 			return err
 		}
 	}
-	if err := client.NetworkRemove(n.Name); err != nil {
+	if err := client.NetworkRemove(*n); err != nil {
 		return err
 	}
 	fmt.Printf("deleted network %s\n", n.Name)

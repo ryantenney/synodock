@@ -61,9 +61,9 @@ func (c *Client) NetworkCreate(name, subnet, gateway, iprange string, disableMas
 	return err
 }
 
-// NetworkRemove deletes networks by name. A network with containers on it is refused by
-// Container Manager.
-func (c *Client) NetworkRemove(names ...string) error {
-	_, err := c.Call("SYNO.Docker.Network", "remove", 1, Params{"networks": JS(names)})
+// NetworkRemove deletes networks. The UI sends them as the rows it listed, whole, not as
+// names; a network with containers on it is refused by Container Manager.
+func (c *Client) NetworkRemove(nets ...Network) error {
+	_, err := c.Call("SYNO.Docker.Network", "remove", 1, Params{"networks": JS(nets)})
 	return err
 }
