@@ -40,7 +40,11 @@ type fakeTerminal struct {
 
 func (f *fakeTerminal) command(command string) *exec.Cmd {
 	if image := os.Getenv("SYNODOCK_TEST_IMAGE"); image != "" {
-		return exec.Command("docker", "run", "--rm", "-i", "-t", "-v", f.data+":"+f.data, image, "sh", "-c", command)
+		args := []string{"run", "--rm", "-i", "-t", "-v", f.data + ":" + f.data}
+		if agent := os.Getenv("SYNODOCK_TEST_AGENT"); agent != "" { // synodock-agent, for the image's arch
+			args = append(args, "-v", agent+":"+AgentPath+":ro")
+		}
+		return exec.Command("docker", append(args, image, "sh", "-c", command)...)
 	}
 	cmd := exec.Command(filepath.Join(f.bin, "sh"), "-c", command)
 	cmd.Env = append(os.Environ(), "PATH="+f.bin+":"+os.Getenv("PATH"))
@@ -385,5 +389,22 @@ func TestUser(t *testing.T) {
 		if code != 0 || strings.TrimSpace(string(out)) != tc.want {
 			t.Errorf("-u %s: exit %d, stdout %q, stderr %q; want %q", tc.user, code, out, errOut, tc.want)
 		}
+	}
+}
+
+// With synodock-agent mounted, it runs the command (its own message for a missing
+// command, not sh's); without it, the script does.
+func TestAgentRunsTheCommand(t *testing.T) {
+	if os.Getenv("SYNODOCK_TEST_AGENT") == "" {
+		t.Skip("set SYNODOCK_TEST_AGENT (and SYNODOCK_TEST_IMAGE) to a synodock-agent build")
+	}
+	client, _ := fakeClient(t)
+	_, errOut, code := runFramedStreams(t, client, []string{"no-such-command"}, Options{Gzip: true})
+	if code != 127 || !strings.HasPrefix(string(errOut), "synodock exec: no-such-command:") {
+		t.Errorf("exit %d, stderr %q: not the agent", code, errOut)
+	}
+	out, _, code := runFramedStreams(t, client, []string{"sh", "-c", "seq 20000; exit 4"}, Options{Gzip: true})
+	if code != 4 || !strings.HasSuffix(string(out), "19999\n20000\n") {
+		t.Errorf("exit %d, %d bytes of output", code, len(out))
 	}
 }

@@ -29,7 +29,11 @@ const (
 // D or R record's bytes: the relay can split one record into several pty reads and
 // reorder them, and pieces of hex in the wrong order still look like a record; the
 // checksum tells the right order from a wrong one.
-var record = regexp.MustCompile(`^\x1e([DRESZ]) (\d+) (\d+) ([0-9a-f]*) ?(\d*)\r?\n$`)
+var record = regexp.MustCompile(`^\x1e([DRESZV]) (\d+) (\d+) ([0-9a-f]*) ?(\d*)\r?\n$`)
+
+// AgentPath is where the framing script looks for synodock-agent, which takes over the
+// exec when it's there (see package wire): mount it into a container read-only.
+const AgentPath = "/opt/synodock/agent"
 
 // fletcher16 is the checksum the framing script appends to a data record. It depends on
 // the bytes' order, so a record put together from reordered pieces fails it.
@@ -67,7 +71,8 @@ END { for (s = 1; s <= 2; s++) if (b[s] != "") emit(s, length(b[s]) / 2); printf
 // arrives, as with docker exec. mawk reads pipes in blocks unless -W interactive;
 // busybox awk ignores that with a warning, so it's only passed when awk is silent. The
 // tools' stderr stays off the tty: one stray line there jams the framing.
-var framed = `stty -echo -opost 2>/dev/null
+var framed = `if [ "$SD_AGENT" = 1 ] && [ -x ` + AgentPath + ` ]; then exec ` + AgentPath + ` run "$@"; fi
+stty -echo -opost 2>/dev/null
 if ! command -v od >/dev/null || ! command -v awk >/dev/null || ! command -v dd >/dev/null; then
   echo "synodock exec: the container has no od, awk or dd (use --raw)"; exit 127; fi
 case $(printf x | LC_ALL=C dd bs=1 count=1 2>&1 >/dev/null) in *"records in"*) ;; *)
@@ -194,14 +199,21 @@ func CommandFor(argv []string, o Options) string {
 	}
 	if !o.Unframed {
 		// env, not an sh variable: the framing script reads SD_GZIP; "$@" is argv.
-		gz := "SD_GZIP=0"
+		gz, agent := "SD_GZIP=0", "SD_AGENT=0"
 		if o.Gzip {
 			gz = "SD_GZIP=1"
 		}
-		return Join(append([]string{"env", gz, "sh", "-c", framed, "sh"}, argv...))
+		if AgentDefault() {
+			agent = "SD_AGENT=1"
+		}
+		return Join(append([]string{"env", gz, agent, "sh", "-c", framed, "sh"}, argv...))
 	}
 	return wrap(argv, o.Interactive, o.Stdin)
 }
+
+// AgentDefault says whether to use synodock-agent where a container has it: on unless
+// SYNODOCK_AGENT=0.
+func AgentDefault() bool { return os.Getenv("SYNODOCK_AGENT") != "0" }
 
 // GzipDefault says whether to compress framed output: on unless SYNODOCK_GZIP=0.
 // Each chunk is its own gzip member, so it costs no latency; it costs ~0.2s on
@@ -331,8 +343,8 @@ func (d *deframer) feed(text string) (*frame, error) {
 	case 'S':
 		d.status, d.hasStatus = n, true
 		return &frame{kind: kind, n: n}, nil
-	case 'Z':
-		return &frame{kind: kind}, nil
+	case 'Z', 'V':
+		return &frame{kind: kind, n: n}, nil
 	}
 	if seq != d.seq {
 		return nil, dsm.Errorf("exec output record %d arrived, expected %d", seq, d.seq)
@@ -517,6 +529,14 @@ func PumpFramed(ctx context.Context, s *Session, write func(stream int, data []b
 			continue
 		}
 		switch rec.kind {
+		case 'V': // synodock-agent took over: go ahead, then read its records
+			if rec.n != 2 {
+				return 0, dsm.Errorf("%s: synodock-agent speaks protocol %d, this synodock 2", s.Container, rec.n)
+			}
+			if err := s.Send("\n"); err != nil {
+				return 0, err
+			}
+			return pumpAgent(ctx, s, write)
 		case 'Z':
 			gzipped = true
 		case 'D', 'R':
