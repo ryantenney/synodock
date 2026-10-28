@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -800,4 +801,35 @@ func (c *Client) ImageDeleteID(id string) error {
 	// Short (12 hex) ids are what's been verified to work; "sha256:..." is not.
 	_, err := c.Call("SYNO.Docker.Image", "delete", 1, Params{"images": JS([]map[string]string{{"identity": ShortID(id)}})})
 	return err
+}
+
+// Download makes a call whose answer is a file, not JSON: Container Manager's exports.
+// It returns the bytes and the file name the NAS gives them. A JSON answer is an error
+// envelope, and comes back as one.
+func (c *Client) Download(api, method string, version int, params Params) ([]byte, string, error) {
+	all := url.Values{"api": {api}, "method": {method}, "version": {strconv.Itoa(version)}}
+	for k, v := range params {
+		all.Set(k, v)
+	}
+	resp, err := c.request(c.ctx, all, nil, "", 0, true)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		var env envelope
+		if err := json.Unmarshal(body, &env); err != nil {
+			return nil, "", fmt.Errorf("%s.%s: %w", api, method, err)
+		}
+		return nil, "", &Error{Msg: fmt.Sprintf("%s.%s failed: %s", api, method, env.Error), Code: env.code()}
+	}
+	name := ""
+	if _, p, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
+		name = p["filename"]
+	}
+	return body, name, nil
 }

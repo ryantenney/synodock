@@ -75,6 +75,8 @@ type options struct {
 	yes          bool          // project deploy: don't ask
 	keepOld      bool          // project deploy: keep the images the deploy replaces
 	timeout      time.Duration // project deploy: how long to wait for healthy
+	format       string        // events export: csv or html
+	output       string        // events export: write to this file, not stdout
 	registry     string        // image pull: the registry URL
 	user         string        // image pull: the registry account
 }
@@ -195,7 +197,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return imageCommand(client, o)
 	case "network ls", "network inspect", "network create", "network rm":
 		return networkCommand(client, o)
-	case "events ls", "events clear":
+	case "events ls", "events clear", "events export":
 		return eventsCommand(client, o)
 	case "project deploy":
 		return projectDeploy(client, o)

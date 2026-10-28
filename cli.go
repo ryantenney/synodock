@@ -203,6 +203,14 @@ var commands = []*command{
 			fs.StringVar(&o.level, "level", "", "only this level: info, warn or err")
 			fs.StringVarP(&o.keyword, "keyword", "k", "", "only events containing this")
 		}},
+	{group: "events", name: "export", opts: "[--format csv|html] [-o FILE] [--level L] [-k WORD]",
+		short: "the log as Container Manager's own CSV or HTML export; to stdout unless -o",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.format, "format", "csv", "csv or html")
+			fs.StringVarP(&o.output, "output", "o", "", "write to this file")
+			fs.StringVar(&o.level, "level", "", "only this level: info, warn or err")
+			fs.StringVarP(&o.keyword, "keyword", "k", "", "only events containing this")
+		}},
 	{group: "events", name: "clear", opts: "[-f]", short: "empty the log; asks for the word clear unless -f",
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")

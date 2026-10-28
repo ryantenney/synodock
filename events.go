@@ -16,6 +16,8 @@ func eventsCommand(client *dsm.Client, o options) (int, error) {
 		return 0, eventsList(client, o)
 	case "events clear":
 		return 0, eventsClear(client, o)
+	case "events export":
+		return 0, eventsExport(client, o)
 	}
 	return 0, nil
 }
@@ -53,5 +55,34 @@ func eventsClear(client *dsm.Client, o options) error {
 		return err
 	}
 	fmt.Println("cleared the event log")
+	return nil
+}
+
+// eventsExport writes the log as CSV (default) or HTML, to stdout or -o FILE. Container
+// Manager takes the format and filters as JSON strings, which is what its own export sends.
+func eventsExport(client *dsm.Client, o options) error {
+	format := o.format
+	if format == "" {
+		format = "csv"
+	}
+	if format != "csv" && format != "html" {
+		return dsm.Errorf("--format is csv or html, not %q", format)
+	}
+	level, ok := eventLevels[o.level]
+	if !ok {
+		return dsm.Errorf("--level is err, warn or info, not %q", o.level)
+	}
+	data, name, err := client.EventsExport(format, level, o.keyword)
+	if err != nil {
+		return err
+	}
+	if o.output == "" {
+		_, err := os.Stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(o.output, data, 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s (%d bytes, the NAS calls it %s)\n", o.output, len(data), name)
 	return nil
 }

@@ -1,6 +1,8 @@
 package dsm
 
-import "strconv"
+import (
+	"strconv"
+)
 
 // Event is an entry in Container Manager's own log (its Log tab): what it did, and
 // when. Container logs are separate; see ContainerLogs.
@@ -34,4 +36,11 @@ func (c *Client) Events(limit int, level, keyword string) (*EventPage, error) {
 func (c *Client) EventsClear() error {
 	_, err := c.Call("SYNO.Docker.Log", "clear", 1, nil)
 	return err
+}
+
+// EventsExport is the whole log, filtered, as the NAS's own CSV or HTML file. It returns
+// the bytes and the file name the NAS gives them.
+func (c *Client) EventsExport(format, level, keyword string) ([]byte, string, error) {
+	return c.Download("SYNO.Docker.Log", "export", 1, Params{
+		"format": JS(format), "loglevel": JS(level), "filter_content": JS(keyword), "datefrom": "0", "dateto": "0"})
 }
