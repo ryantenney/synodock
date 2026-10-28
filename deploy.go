@@ -309,13 +309,16 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 
 // downtime is clean, the compose update, build, and the health wait.
 func downtime(client *dsm.Client, p *dsm.Project, target string, composeChanged bool, expected []string, timeout time.Duration) error {
+	// The backup needs no downtime, so it goes first: if it fails, nothing is down yet.
+	if composeChanged {
+		if _, err := client.BackupProject(p, p.Content); err != nil {
+			return fmt.Errorf("backing up the compose file: %w (nothing was taken down)", err)
+		}
+	}
 	if code, err := client.ProjectStream(p.ID, "clean", printLine); err != nil || code != 0 {
 		return fmt.Errorf("clean failed (exit %d)%s", code, errSuffix(err))
 	}
 	if composeChanged {
-		if _, err := client.BackupProject(p, p.Content); err != nil {
-			return err
-		}
 		if err := client.ProjectUpdate(p.ID, target); err != nil {
 			return err
 		}

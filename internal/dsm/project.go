@@ -3,6 +3,8 @@ package dsm
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -126,6 +128,20 @@ func (c *Client) ProjectCreate(name, sharePath, content string) (*Project, error
 // ProjectStream runs a compose action (build, clean, start, stop, restart) and passes
 // each line of its output to out. It returns compose's exit code.
 func (c *Client) ProjectStream(id, action string, out func(string)) (int, error) {
+	code, err := c.projectStream(id, action, out)
+	// 106/119: the session timed out or isn't known yet. DSM refuses the request before
+	// running anything, so log in again and send it once more, as Call does.
+	var dsmErr *Error
+	if errors.As(err, &dsmErr) && (dsmErr.Code == 106 || dsmErr.Code == 119) {
+		if err := c.relogin(c.SID()); err != nil {
+			return 0, err
+		}
+		return c.projectStream(id, action, out)
+	}
+	return code, err
+}
+
+func (c *Client) projectStream(id, action string, out func(string)) (int, error) {
 	params := url.Values{"api": {"SYNO.Docker.Project"}, "method": {action + "_stream"}, "version": {"1"}, "id": {JS(id)}}
 	resp, err := c.request(c.ctx, params, nil, "", 0, true)
 	if err != nil {
@@ -151,7 +167,13 @@ func (c *Client) ProjectStream(id, action string, out func(string)) (int, error)
 				text = v
 			case map[string]any:
 				if success, ok := v["success"].(bool); ok && !success {
-					return 0, Errorf("%s failed: %v", action, v["error"])
+					e := &Error{Msg: fmt.Sprintf("%s failed: %v", action, v["error"])}
+					if detail, ok := v["error"].(map[string]any); ok {
+						if n, ok := detail["code"].(float64); ok {
+							e.Code = int(n)
+						}
+					}
+					return 0, e
 				}
 			}
 		}
@@ -193,13 +215,42 @@ func (c *Client) StaleNames(p *Project) ([]string, error) {
 	return stale, nil
 }
 
-// bindFolder matches a compose bind mount relative to the project: ./data:/var/lib/x.
-var bindFolder = regexp.MustCompile(`(?m)^\s*-\s*['"]?\./([^/:'"]+)[^:]*:`)
+// bindSource matches a compose bind mount relative to the project, short syntax:
+// ./data:/var/lib/x, giving data; ./logs/nginx:/var/log/nginx, giving logs/nginx.
+var bindSource = regexp.MustCompile(`(?m)^\s*-\s*['"]?\./([^:'"\s]+):`)
+
+// bindFolders are the folders to make for a compose file's relative bind mounts, and the
+// sources left alone because they look like files (./nginx.conf): making a folder there
+// would mount a directory where the container expects a file. A source's parent folders
+// are always folders.
+func bindFolders(content string) (folders, skipped []string) {
+	seen := map[string]bool{}
+	add := func(path string) {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			folders = append(folders, path)
+		}
+	}
+	for _, m := range bindSource.FindAllStringSubmatch(content, -1) {
+		source := strings.Trim(m[1], "/")
+		parts := strings.Split(source, "/")
+		for i := 1; i < len(parts); i++ {
+			add(strings.Join(parts[:i], "/"))
+		}
+		if leaf := parts[len(parts)-1]; strings.Contains(strings.TrimPrefix(leaf, "."), ".") {
+			skipped = append(skipped, "./"+source)
+			continue
+		}
+		add(source)
+	}
+	return folders, skipped
+}
 
 // CreateProject makes the project's folder at sharePath, and the folders its compose
 // file binds relative to it (Container Manager creates neither, and a missing one fails
-// the build), then the project. created is called for each folder it makes.
-func (c *Client) CreateProject(name, sharePath, content string, created func(string)) (*Project, error) {
+// the build), then the project. note is called for each folder it makes, and for each
+// bind source it leaves alone because it looks like a file.
+func (c *Client) CreateProject(name, sharePath, content string, note func(string)) (*Project, error) {
 	projects, err := c.Projects()
 	if err != nil {
 		return nil, err
@@ -221,16 +272,19 @@ func (c *Client) CreateProject(name, sharePath, content string, created func(str
 			return nil, err
 		}
 	}
-	for _, m := range bindFolder.FindAllStringSubmatch(content, -1) {
-		folder := m[1]
-		if existing[folder] {
+	folders, skipped := bindFolders(content)
+	for _, folder := range folders {
+		top, _, nested := strings.Cut(folder, "/")
+		if !nested && existing[top] {
 			continue
 		}
-		if err := c.FSMkdir(sharePath, folder); err != nil {
+		if err := c.FSMkdirAll(sharePath + "/" + folder); err != nil {
 			return nil, err
 		}
-		existing[folder] = true
-		created(sharePath + "/" + folder)
+		note("created " + sharePath + "/" + folder)
+	}
+	for _, source := range skipped {
+		note("left " + source + " alone: it looks like a file, so upload it before the first build")
 	}
 	return c.ProjectCreate(name, sharePath, content)
 }
@@ -277,10 +331,12 @@ func (c *Client) FSNames(folder string) (map[string]bool, error) {
 	return names, nil
 }
 
-// FSMkdir makes a folder called name inside folder.
-func (c *Client) FSMkdir(folder, name string) error {
+// FSMkdirAll makes a folder and any parents it needs (FileStation's force_parent). An
+// existing folder is fine.
+func (c *Client) FSMkdirAll(path string) error {
+	parent, name := filepath.Split(strings.TrimRight(path, "/"))
 	_, err := c.Call("SYNO.FileStation.CreateFolder", "create", 2, Params{
-		"folder_path": JS([]string{folder}), "name": JS([]string{name})})
+		"folder_path": JS([]string{strings.TrimRight(parent, "/")}), "name": JS([]string{name}), "force_parent": "true"})
 	return err
 }
 

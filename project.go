@@ -89,8 +89,8 @@ func projectCreate(client *dsm.Client, o options) error {
 	if share == "" {
 		share = "/docker/" + o.name
 	}
-	p, err := client.CreateProject(o.name, share, string(content), func(folder string) {
-		fmt.Fprintf(os.Stderr, "created %s\n", folder)
+	p, err := client.CreateProject(o.name, share, string(content), func(note string) {
+		fmt.Fprintln(os.Stderr, note)
 	})
 	if err != nil {
 		return err
