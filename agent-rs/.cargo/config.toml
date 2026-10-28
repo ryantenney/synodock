@@ -1,0 +1,4 @@
+# musl targets link static by default (crt-static). 4 KiB pages: arm64's default 64 KiB
+# alignment pads the binary by about 40 KB.
+[target.'cfg(target_env = "musl")']
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=4096"]

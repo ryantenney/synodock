@@ -1,0 +1,33 @@
+[package]
+name = "synodock-agent"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ryan Tenney"]
+description = "synodock exec's in-container agent: no_std, libc only"
+publish = false
+
+[[bin]]
+name = "synodock-agent"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = ["gzip"]
+# gzip: C records when synodock's go-ahead takes them; without it the agent only sends D.
+gzip = ["dep:miniz_oxide"]
+
+[dependencies]
+libc = { version = "0.2", default-features = false }
+# with-alloc is what gates the deflater; the allocator is libc's malloc.
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"], optional = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+panic = "abort"
