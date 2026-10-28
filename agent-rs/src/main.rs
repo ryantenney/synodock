@@ -1,6 +1,7 @@
 //! synodock-agent runs a command inside a container for synodock exec, in place of the
 //! shell framing script, when it's in the container at /opt/synodock/agent. This is the
-//! Rust version of agent/agent.c: the same protocol and behaviour, no_std, calling libc.
+//! Rust port of the C agent (agent/agent.c, removed after 676a932): the same protocol and
+//! behaviour, no_std, calling libc.
 //!
 //! Author: Ryan Tenney
 //!

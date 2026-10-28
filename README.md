@@ -180,7 +180,7 @@ $ synodock --nas home service install       # serve started on demand by launchd
 
 ### synodock-agent: faster exec, where you can mount it
 
-`synodock-agent` is a small static binary (about 2 MB) that runs the command in place of
+`synodock-agent` is a small static binary (about 55 KB) that runs the command in place of
 the shell framing script when it's in the container at `/opt/synodock/agent`. It keeps
 several records in flight instead of one, so output comes back several times faster
 (on the NAS: `seq 100000` in 1.3 s instead of 2.4 s, 256 KB of random data in 1.1 s
@@ -188,16 +188,19 @@ instead of 2.7 s, both including about 1 s of login), and it needs nothing in th
 (no `sh`, `dd`, `od` or `awk`). It compresses output as the script does with gzip,
 unless `--no-gzip` or `SYNODOCK_GZIP=0`. A container without it works as before.
 
+It's in `agent-rs/`: Rust, `no_std` over libc, static with musl, built in a
+`rust:alpine` container. `GZIP=0` leaves compression out (about 34 KB; it then never
+compresses, and synodock takes that):
+
 ```console
-$ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o synodock-agent ./cmd/synodock-agent
+$ agent-rs/build.sh           # build/synodock-agent-rs-{amd64,arm64}
+$ GZIP=0 agent-rs/build.sh    # build/synodock-agent-rs-nogzip-{amd64,arm64}
 ```
 
-Or the C version in `agent/` (same protocol; static with musl, about 92 KB with zlib,
-51 KB without, which never compresses), built in an Alpine container:
+The Go version in `cmd/synodock-agent` (about 2 MB, same protocol) is the fallback:
 
 ```console
-$ agent/build.sh            # build/synodock-agent-c-{amd64,arm64}
-$ ZLIB=0 agent/build.sh     # build/synodock-agent-c-nozlib-{amd64,arm64}
+$ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o synodock-agent ./cmd/synodock-agent
 ```
 
 Put it in a NAS folder and mount it read-only into the services you exec into, in their
