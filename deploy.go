@@ -325,8 +325,17 @@ func errSuffix(err error) string {
 // waitHealthy waits until every expected container is listed, running, and healthy if it
 // has a check. A one-shot container that exited 0 counts as done. Container Manager's list
 // trails Docker by a while after a create, so a missing name isn't an error yet.
+// pollEvery is how often the health wait looks again, and unhealthyGrace how long a
+// container may stay unhealthy before the wait gives up on it: a health check can fail a
+// few times while a service starts and still recover, so one unhealthy look isn't enough.
+var (
+	pollEvery      = 10 * time.Second
+	unhealthyGrace = 2 * time.Minute
+)
+
 func waitHealthy(client *dsm.Client, id string, timeout time.Duration, expected []string) error {
 	deadline := time.Now().Add(timeout)
+	unhealthySince := map[string]time.Time{}
 	for {
 		p, err := client.ProjectByName(id)
 		if err != nil {
@@ -350,6 +359,13 @@ func waitHealthy(client *dsm.Client, id string, timeout time.Duration, expected 
 			if !ready {
 				pending = append(pending, name+"="+status)
 			}
+			if status != "unhealthy" {
+				delete(unhealthySince, name)
+			} else if since, ok := unhealthySince[name]; !ok {
+				unhealthySince[name] = time.Now()
+			} else if time.Since(since) >= unhealthyGrace {
+				return fmt.Errorf("%s has been unhealthy for %s", name, time.Since(since).Round(time.Second))
+			}
 		}
 		if len(pending) == 0 {
 			return nil
@@ -358,7 +374,7 @@ func waitHealthy(client *dsm.Client, id string, timeout time.Duration, expected 
 			return fmt.Errorf("not healthy after %s: %s", timeout, strings.Join(pending, ", "))
 		}
 		fmt.Fprintf(os.Stderr, "  waiting: %s\n", strings.Join(pending, ", "))
-		time.Sleep(10 * time.Second)
+		time.Sleep(pollEvery)
 	}
 }
 

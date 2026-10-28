@@ -34,7 +34,8 @@ type deployNAS struct {
 	status     string
 	compose    string
 	containers map[string]*fakeContainer
-	failWith   int // a build's new containers exit with this, when non-zero
+	failWith   int    // a build's new containers exit with this, when non-zero
+	healthOf   string // a build's new containers report this health, when set
 
 	images   map[string]string // tag -> full image id
 	untagged map[string]string // full image id -> its repository, once its last tag moved
@@ -59,6 +60,7 @@ func fullID(short string) string { return "sha256:" + short + strings.Repeat("0"
 // with, whatever its tag names later, and the environment compose gave it then.
 type fakeContainer struct {
 	service, ref, imageID, status string
+	health                        string
 	exit                          int
 	env                           []string
 }
@@ -88,6 +90,7 @@ func (n *deployNAS) build() {
 		if n.failWith != 0 {
 			c.status, c.exit = "exited", n.failWith
 		}
+		c.health = n.healthOf
 		projectEnv := files[".env"]
 		if projectEnv == nil {
 			projectEnv = map[string]*string{}
@@ -259,7 +262,7 @@ func (n *deployNAS) projectJSON(full bool) map[string]any {
 		var cs []map[string]any
 		for name, c := range n.containers {
 			cs = append(cs, map[string]any{"Name": "/" + name, "Image": c.imageID,
-				"State":      map[string]any{"Status": c.status, "ExitCode": c.exit},
+				"State":      n.state(c),
 				"Config":     map[string]any{"Image": c.ref, "Env": c.env, "Labels": map[string]string{"com.docker.compose.service": c.service}},
 				"HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}})
 		}
@@ -610,5 +613,34 @@ func TestServiceDeployBlocksWhenAnotherServiceDependsOnIt(t *testing.T) {
 	})
 	if code != 1 || !strings.Contains(out, "db depends on api") {
 		t.Errorf("code %d, output:\n%s", code, out)
+	}
+}
+
+func (n *deployNAS) state(c *fakeContainer) map[string]any {
+	st := map[string]any{"Status": c.status, "ExitCode": c.exit}
+	if c.health != "" {
+		st["Health"] = map[string]any{"Status": c.health}
+	}
+	return st
+}
+
+func TestDeployGivesUpOnAContainerThatStaysUnhealthy(t *testing.T) {
+	oldPoll, oldGrace := pollEvery, unhealthyGrace
+	pollEvery, unhealthyGrace = 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { pollEvery, unhealthyGrace = oldPoll, oldGrace })
+	nas := newDeployNAS(t, "web", appCompose, map[string]string{"omni/app:latest": "aaaaaaaaaaaa"})
+	client := deployClient(t, nas)
+	nas.healthOf = "unhealthy"
+	var code int
+	start := time.Now()
+	out := captured(t, func() {
+		code, _ = projectDeploy(client, options{name: "web", images: []string{saveTarFor(t, "bbbbbbbbbbbb", "omni/app:latest")},
+			yes: true, timeout: time.Minute})
+	})
+	if code != 1 || !strings.Contains(out, "app has been unhealthy for") {
+		t.Errorf("code %d, output:\n%s", code, out)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Error("waited out the timeout instead of the grace period")
 	}
 }
