@@ -103,6 +103,17 @@ func TestParse(t *testing.T) {
 			return o.tail == 20 && o.level == "err" && o.keyword == "x"
 		}},
 		{[]string{"events", "clear", "-f"}, "events clear", 0, func(o options) bool { return o.force }},
+		{[]string{"project", "deploy", "web", "--image", "a.tar", "--image", "b.tar", "--pull", "r/x:1", "--compose", "c.yml",
+			"-y", "--timeout", "15m", "--keep-old-images"}, "project deploy", 0, func(o options) bool {
+			return o.name == "web" && len(o.images) == 2 && len(o.pulls) == 1 && o.file == "c.yml" && o.yes &&
+				o.timeout.Minutes() == 15 && o.keepOld && !o.dryRun
+		}},
+		{[]string{"project", "deploy", "web", "--dry-run"}, "project deploy", 0, func(o options) bool { return o.dryRun }},
+		{[]string{"project", "plan", "web", "--pull", "r/x"}, "project plan", 0, func(o options) bool {
+			return o.dryRun && len(o.pulls) == 1 && !o.yes
+		}},
+		{[]string{"project", "plan", "web", "-y"}, "", 2, nil},                 // plan never deploys
+		{[]string{"project", "deploy", "web", "--timeout", "900"}, "", 2, nil}, // a duration, not seconds as dsm.py took
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

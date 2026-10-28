@@ -8,9 +8,6 @@ import (
 	"github.com/ryantenney/synodock/internal/dsm"
 )
 
-// registryPasswordEnv is the registry password for registry add and image pull.
-const registryPasswordEnv = "SYNODOCK_REGISTRY_PASSWORD"
-
 // registryCommand runs one registry command and returns the exit code.
 func registryCommand(client *dsm.Client, o options) (int, error) {
 	switch o.cmd {
@@ -50,9 +47,9 @@ func registryList(client *dsm.Client) error {
 func registryAdd(client *dsm.Client, o options) error {
 	password := ""
 	if o.user != "" {
-		password = os.Getenv(registryPasswordEnv)
+		password = os.Getenv(dsm.RegistryPasswordEnv)
 		if password == "" {
-			return dsm.Errorf("set %s to the password for %s", registryPasswordEnv, o.user)
+			return dsm.Errorf("set %s to the password for %s", dsm.RegistryPasswordEnv, o.user)
 		}
 	}
 	if err := client.RegistryAdd(o.name, o.registry, o.user, password); err != nil {

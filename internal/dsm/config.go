@@ -25,6 +25,12 @@ type Config struct {
 	OTPCommand      string
 	IdleExit        *time.Duration // idle_exit: how long serve waits idle before exiting; nil if unset
 	idleExit        string
+
+	// The registry project deploy --pull and image pull use when no --registry is given:
+	// its URL, its account, and a command that prints its password.
+	Registry                string
+	RegistryUser            string
+	RegistryPasswordCommand string
 }
 
 // Host is the NAS's host name, which keys its saved credentials.
@@ -48,6 +54,10 @@ type settings struct {
 	PasswordCommand string `toml:"password_command"`
 	OTPCommand      string `toml:"otp_command"`
 	IdleExit        string `toml:"idle_exit"`
+
+	Registry                string `toml:"registry"`
+	RegistryUser            string `toml:"registry_user"`
+	RegistryPasswordCommand string `toml:"registry_password_command"`
 }
 
 type configFile struct {
@@ -59,6 +69,10 @@ type configFile struct {
 	OTPCommand      string              `toml:"otp_command"`
 	IdleExit        string              `toml:"idle_exit"`
 	NAS             map[string]settings `toml:"nas"`
+
+	Registry                string `toml:"registry"`
+	RegistryUser            string `toml:"registry_user"`
+	RegistryPasswordCommand string `toml:"registry_password_command"`
 }
 
 func ConfigPath() string { return filepath.Join(ConfigDir, "config.toml") }
@@ -153,6 +167,10 @@ func envSettings() *Config {
 		PasswordCommand: os.Getenv("SYNODOCK_PASSWORD_COMMAND"),
 		OTPCommand:      os.Getenv("SYNODOCK_OTP_COMMAND"),
 		idleExit:        os.Getenv("SYNODOCK_IDLE_EXIT"),
+
+		Registry:                os.Getenv("SYNODOCK_REGISTRY"),
+		RegistryUser:            os.Getenv("SYNODOCK_REGISTRY_USER"),
+		RegistryPasswordCommand: os.Getenv("SYNODOCK_REGISTRY_PASSWORD_COMMAND"),
 	}
 }
 
@@ -165,6 +183,9 @@ func (f *configFile) unnamed() *Config {
 	c.PasswordCommand = firstOf(c.PasswordCommand, f.PasswordCommand)
 	c.OTPCommand = firstOf(c.OTPCommand, f.OTPCommand)
 	c.idleExit = firstOf(c.idleExit, f.IdleExit)
+	c.Registry = firstOf(c.Registry, f.Registry)
+	c.RegistryUser = firstOf(c.RegistryUser, f.RegistryUser)
+	c.RegistryPasswordCommand = firstOf(c.RegistryPasswordCommand, f.RegistryPasswordCommand)
 	return c
 }
 
@@ -178,7 +199,8 @@ func (f *configFile) profile(name, chosenBy string) (*Config, error) {
 		return nil, Errorf("no NAS named %q (%s); %s has %s", name, chosenBy, ConfigPath(), strings.Join(known, ", "))
 	}
 	return &Config{Name: name, URL: p.URL, User: p.User, Keychain: firstOf(p.Keychain, "synodock"),
-		PasswordCommand: p.PasswordCommand, OTPCommand: p.OTPCommand, idleExit: p.IdleExit}, nil
+		PasswordCommand: p.PasswordCommand, OTPCommand: p.OTPCommand, idleExit: p.IdleExit,
+		Registry: p.Registry, RegistryUser: p.RegistryUser, RegistryPasswordCommand: p.RegistryPasswordCommand}, nil
 }
 
 func (f *configFile) names() []string {

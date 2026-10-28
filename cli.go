@@ -69,6 +69,27 @@ var shortcuts = map[string]string{
 
 var shortcutOrder = []string{"ps", "logs", "top", "exec"}
 
+// deployFlags are project deploy's flags; plan has the same ones without -y and --dry-run,
+// since it only ever plans.
+func deployFlags(deploy bool) func(fs *pflag.FlagSet, o *options) {
+	return func(fs *pflag.FlagSet, o *options) {
+		fs.StringArrayVar(&o.images, "image", nil, "a docker save tar to load (repeatable)")
+		fs.StringArrayVar(&o.pulls, "pull", nil, "a registry image, REPO[:TAG], to pull (repeatable)")
+		fs.StringVar(&o.registry, "registry", "", "the registry's URL, for --pull (default: registry in the profile)")
+		fs.StringVar(&o.user, "user", "", "the registry account, for --pull (default: registry_user in the profile)")
+		fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
+		fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
+		fs.BoolVar(&o.keepOld, "keep-old-images", false, "don't delete the images the deploy replaces")
+		fs.DurationVar(&o.timeout, "timeout", 10*time.Minute, "how long to wait for the containers to be healthy")
+		if deploy {
+			fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and stop (the same as project plan)")
+			fs.BoolVarP(&o.yes, "yes", "y", false, "don't ask before taking the project down")
+		} else {
+			o.dryRun = true
+		}
+	}
+}
+
 // two takes NAME and FILE.
 func two(o *options, rest []string) bool {
 	if len(rest) != 2 {
@@ -196,20 +217,12 @@ var commands = []*command{
 		short: "bring a stopped project up: compose build, streamed", positional: one},
 	{group: "project", name: "down", aliases: []string{"clean"}, args: "NAME",
 		short: "take a project down: compose clean (containers and network; named volumes stay)", positional: one},
-	{group: "project", name: "deploy", opts: "[--image TAR]... [--compose FILE] [--dry-run] [-y] [--keep-old-images]", args: "NAME",
-		short: "take it down, load new images, update the compose file, build, wait healthy, then clean up old images",
-		flags: func(fs *pflag.FlagSet, o *options) {
-			fs.StringArrayVar(&o.images, "image", nil, "a docker save tar to load (repeatable)")
-			fs.StringArrayVar(&o.pulls, "pull", nil, "a registry image, REPO[:TAG], to pull (repeatable; needs --registry and --user)")
-			fs.StringVar(&o.registry, "registry", "", "the registry's URL, for --pull")
-			fs.StringVar(&o.user, "user", "", "the registry account, for --pull")
-			fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
-			fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
-			fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and stop")
-			fs.BoolVarP(&o.yes, "yes", "y", false, "don't ask before taking the project down")
-			fs.BoolVar(&o.keepOld, "keep-old-images", false, "don't delete the images the deploy replaces")
-			fs.DurationVar(&o.timeout, "timeout", 10*time.Minute, "how long to wait for the containers to be healthy")
-		}, positional: one},
+	{group: "project", name: "deploy", opts: "[--image TAR]... [--pull REPO[:TAG]]... [--compose FILE] [--dry-run] [-y]", args: "NAME",
+		short: "take it down, load or pull new images, update the compose file, build, wait healthy, then clean up old images",
+		flags: deployFlags(true), positional: one},
+	{group: "project", name: "plan", opts: "[--image TAR]... [--pull REPO[:TAG]]... [--compose FILE]", args: "NAME",
+		short: "deploy's checks and plan; changes nothing (deploy --dry-run, under a name an allowlist can match)",
+		flags: deployFlags(false), positional: one},
 	{group: "project", name: "logs", args: "NAME", short: "the compose output from its last action", positional: one},
 	{group: "project", name: "rm", opts: "[-f]", args: "NAME",
 		short: "delete a stopped project with its containers and data; asks for the name unless -f",

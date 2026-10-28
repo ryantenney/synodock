@@ -52,6 +52,10 @@ user = "docker"
 | 2FA code command | `SYNODOCK_OTP_COMMAND` | `otp_command` | prints a current code, when DSM asks for one |
 | Idle exit | `SYNODOCK_IDLE_EXIT` | `idle_exit` | how long `serve` waits idle before exiting, e.g. `"30m"`; `"0"` never; default 15m when started on demand |
 | Keychain service (macOS) | `SYNODOCK_KEYCHAIN` | `keychain` | default `synodock`; account = `user@host`, else the user |
+| Registry | `SYNODOCK_REGISTRY` | `registry` | for `project deploy --pull` and `image pull`, e.g. `"https://registry.example.com"`; `--registry` overrides |
+| Registry account | `SYNODOCK_REGISTRY_USER` | `registry_user` | `--user` overrides |
+| Registry password | `SYNODOCK_REGISTRY_PASSWORD` | | else `registry_password_command` |
+| Registry password command | `SYNODOCK_REGISTRY_PASSWORD_COMMAND` | `registry_password_command` | prints the registry password |
 
 On macOS, store the password in the keychain once (`-a docker@nas.example.com`
 instead keeps the same account name on several NAS apart):
@@ -146,6 +150,8 @@ $ synodock project config NAME [-o FILE]    # a project's compose file
 $ synodock project up|down|start|stop|restart NAME   # compose build/clean/start/stop/restart, streamed
 $ synodock project create NAME FILE [--path DIR]     # the folders are made too
 $ synodock project update NAME FILE         # stopped projects only; the old file is backed up
+$ synodock project plan NAME [--image TAR]... [--pull REPO[:TAG]]... [--compose FILE]   # what deploy would do
+$ synodock project deploy NAME [same flags] [-y]     # load/pull while up, then down, update, up, wait healthy
 $ synodock use [NAME]                       # list the NAS, or pick the default
 $ synodock --nas home service install       # serve started on demand by launchd/systemd
 ```

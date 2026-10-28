@@ -4,7 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"net/url"
+	neturl "net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -21,7 +22,7 @@ var manifestTypes = strings.Join([]string{
 // (the id the NAS shows once it has that image), or "" if the registry doesn't have it. It
 // uses the registry's own v2 API with basic auth.
 func RegistryImageID(registryURL, repo, tag, user, password string) (string, error) {
-	base, err := url.Parse(registryURL)
+	base, err := neturl.Parse(registryURL)
 	if err != nil {
 		return "", err
 	}
@@ -72,4 +73,37 @@ func RegistryImageID(registryURL, repo, tag, user, password string) (string, err
 	cfg, _ := manifest["config"].(map[string]any)
 	digest, _ := cfg["digest"].(string)
 	return ShortID(digest), nil
+}
+
+// RegistryAuth is a registry to pull from and how to log in to it.
+type RegistryAuth struct {
+	URL, User, Password string
+	Host                string // as the NAS names images pulled from it: host[:port]
+}
+
+// RegistryPasswordEnv holds a registry password, over registry_password_command.
+const RegistryPasswordEnv = "SYNODOCK_REGISTRY_PASSWORD"
+
+// Registry is the registry a pull uses: the URL and account given, else the profile's
+// registry and registry_user. The password is SYNODOCK_REGISTRY_PASSWORD, else what
+// registry_password_command prints.
+func (c *Client) Registry(url, user string) (*RegistryAuth, error) {
+	r := &RegistryAuth{URL: firstOf(url, c.Config.Registry), User: firstOf(user, c.Config.RegistryUser)}
+	if r.URL == "" || r.User == "" {
+		return nil, Errorf("no registry: pass --registry and --user, or set registry and registry_user in %s", ConfigPath())
+	}
+	u, err := neturl.Parse(r.URL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, Errorf("registry %q: want its URL, like https://registry.example.com", r.URL)
+	}
+	r.URL, r.Host = strings.TrimRight(r.URL, "/"), u.Host
+	if r.Password = os.Getenv(RegistryPasswordEnv); r.Password == "" && c.Config.RegistryPasswordCommand != "" {
+		if r.Password, err = c.secrets.run(c.ctx, "registry_password_command", c.Config.RegistryPasswordCommand); err != nil {
+			return nil, err
+		}
+	}
+	if r.Password == "" {
+		return nil, Errorf("no password for registry %s: set %s, or registry_password_command in %s", r.Host, RegistryPasswordEnv, ConfigPath())
+	}
+	return r, nil
 }

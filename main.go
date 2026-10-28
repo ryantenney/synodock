@@ -201,7 +201,7 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return networkCommand(client, o)
 	case "events ls", "events clear", "events export":
 		return eventsCommand(client, o)
-	case "project deploy":
+	case "project deploy", "project plan":
 		return projectDeploy(client, o)
 	case "container export":
 		return 0, containerExport(client, o)

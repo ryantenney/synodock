@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,11 +51,11 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	}
 	composeChanged := target != current
 	folder := strings.TrimSuffix(o.folder, "/")
-	if len(o.pulls) > 0 && (o.registry == "" || o.user == "") {
-		return 0, dsm.Errorf("deploy --pull needs --registry and --user")
-	}
-	if len(o.pulls) > 0 && os.Getenv(registryPasswordEnv) == "" {
-		return 0, dsm.Errorf("set %s to the registry password for %s", registryPasswordEnv, o.user)
+	var reg *dsm.RegistryAuth
+	if len(o.pulls) > 0 {
+		if reg, err = client.Registry(o.registry, o.user); err != nil {
+			return 0, err
+		}
 	}
 	if folder == "" {
 		folder = p.SharePath + "/images"
@@ -125,17 +124,13 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	var pulls []deployPull
 	for _, ref := range o.pulls {
 		repo, tag := splitRef(ref)
-		u, err := url.Parse(o.registry)
-		if err != nil {
-			return 0, err
-		}
-		target := u.Host + "/" + repo + ":" + tag
-		remote, err := dsm.RegistryImageID(o.registry, repo, tag, o.user, os.Getenv(registryPasswordEnv))
+		target := reg.Host + "/" + repo + ":" + tag
+		remote, err := dsm.RegistryImageID(reg.URL, repo, tag, reg.User, reg.Password)
 		if err != nil {
 			return 0, err
 		}
 		if remote == "" {
-			problems = append(problems, fmt.Sprintf("%s:%s is not in %s (push it first)", repo, tag, o.registry))
+			problems = append(problems, fmt.Sprintf("%s:%s is not in %s (push it first)", repo, tag, reg.URL))
 			continue
 		}
 		if !inCompose[target] {
@@ -189,7 +184,7 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 		if pl.current {
 			fmt.Printf("  skip   %s: already the registry's image (%s)\n", pl.target, pl.remote)
 		} else {
-			fmt.Printf("  pull   %s (%s) from %s\n", pl.target, pl.remote, o.registry)
+			fmt.Printf("  pull   %s (%s) from %s\n", pl.target, pl.remote, reg.URL)
 		}
 	}
 	oldAction := "deleted after healthy"
@@ -251,10 +246,26 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 			return 1, err
 		}
 	}
+	// A load can report success without moving a tag; check every tag now names the tar's
+	// image, as the pulls below do, before anything goes down.
+	if len(uploads) > 0 {
+		got, err := client.ImageIDsByTag()
+		if err != nil {
+			return 1, err
+		}
+		for _, t := range uploads {
+			for _, tag := range t.info.Tags {
+				if dsm.ShortID(got[tag]) != t.info.ShortID {
+					return 1, dsm.Errorf("after loading %s, %s is %s, expected %s; the project is still up",
+						t.name, tag, dsm.ShortID(got[tag]), t.info.ShortID)
+				}
+			}
+		}
+	}
 
 	for _, pl := range pullNow {
 		fmt.Fprintf(os.Stderr, "pulling %s\n", pl.target)
-		if err := client.ImagePull(o.registry, pl.repo, pl.tag, o.user, os.Getenv(registryPasswordEnv), time.Hour); err != nil {
+		if err := client.ImagePull(reg.URL, pl.repo, pl.tag, reg.User, reg.Password, time.Hour); err != nil {
 			return 1, err
 		}
 		got, err := client.ImageIDsByTag()
@@ -268,8 +279,12 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 
 	// --- downtime ---
 	if err := downtime(client, p, target, composeChanged, expected, o.timeout); err != nil {
-		fmt.Fprintf(os.Stderr, "synodock: deploy stopped: %v\n  compose backups are in %s/backups; old images were left in place\n",
-			err, p.SharePath)
+		status := "unknown (couldn't list projects)"
+		if now, lerr := client.ProjectListed(p.ID); lerr == nil {
+			status = now.Status
+		}
+		fmt.Fprintf(os.Stderr, "synodock: deploy stopped: %v\n  %s is now %s; compose backups are in %s/backups; "+
+			"old images were left in place\n", err, p.Name, status, p.SharePath)
 		return 1, nil
 	}
 	fmt.Printf("%s is up and healthy\n", p.Name)
@@ -342,20 +357,11 @@ func waitHealthy(client *dsm.Client, id string, timeout time.Duration, expected 
 				pending = append(pending, name+"=missing")
 				continue
 			}
-			oneShot := c.HostConfig.RestartPolicy.Name == "" || c.HostConfig.RestartPolicy.Name == "no"
-			if c.State.Status == "exited" && oneShot {
-				// A one-shot that exited 0 is done. Anything else that exited without a restart
-				// policy won't come back, so waiting would only time out.
-				if c.State.ExitCode == 0 {
-					continue
-				}
-				return fmt.Errorf("%s exited with status %d and won't restart", name, c.State.ExitCode)
+			ready, status, err := containerReady(c)
+			if err != nil {
+				return fmt.Errorf("%s %v", name, err)
 			}
-			if c.State.Status != "running" || (c.Health() != "" && c.Health() != "healthy") {
-				status := c.Health()
-				if status == "" {
-					status = c.State.Status
-				}
+			if !ready {
 				pending = append(pending, name+"="+status)
 			}
 		}
@@ -382,4 +388,27 @@ func confirmYes(question string) error {
 		return dsm.Errorf("aborted")
 	}
 	return nil
+}
+
+// containerReady says whether one container is done for the health wait: running and
+// healthy (if it has a check), or exited 0 where Docker won't restart it (no policy, or
+// on-failure). One that exited non-zero with no restart policy is an error, since it won't
+// come back. Otherwise status is what to show while waiting.
+func containerReady(c *dsm.ProjectContainer) (ready bool, status string, err error) {
+	policy := c.HostConfig.RestartPolicy.Name
+	if c.State.Status == "exited" {
+		if c.State.ExitCode == 0 && (policy == "" || policy == "no" || policy == "on-failure") {
+			return true, "", nil
+		}
+		if policy == "" || policy == "no" {
+			return false, "", fmt.Errorf("exited with status %d and won't restart", c.State.ExitCode)
+		}
+	}
+	if c.State.Status == "running" && (c.Health() == "" || c.Health() == "healthy") {
+		return true, "", nil
+	}
+	if h := c.Health(); h != "" && c.State.Status == "running" {
+		return false, h, nil
+	}
+	return false, c.State.Status, nil
 }

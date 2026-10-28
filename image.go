@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,21 +113,14 @@ func imagePull(client *dsm.Client, o options) error {
 	if !found || strings.Contains(tag, "/") {
 		repo, tag = o.name, "latest"
 	}
-	if o.registry == "" || o.user == "" {
-		return dsm.Errorf("image pull needs --registry and --user")
-	}
-	password := os.Getenv(registryPasswordEnv)
-	if password == "" {
-		return dsm.Errorf("set %s to the registry password for %s", registryPasswordEnv, o.user)
-	}
-	fmt.Fprintf(os.Stderr, "pulling %s:%s from %s\n", repo, tag, o.registry)
-	if err := client.ImagePull(o.registry, repo, tag, o.user, password, time.Hour); err != nil {
-		return err
-	}
-	u, err := url.Parse(o.registry)
+	reg, err := client.Registry(o.registry, o.user)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pulled %s/%s:%s\n", u.Host, repo, tag)
+	fmt.Fprintf(os.Stderr, "pulling %s:%s from %s\n", repo, tag, reg.URL)
+	if err := client.ImagePull(reg.URL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
+		return err
+	}
+	fmt.Printf("pulled %s/%s:%s\n", reg.Host, repo, tag)
 	return nil
 }
