@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -61,7 +62,15 @@ func humanSize(bytes string) string {
 	return fmt.Sprintf("%.1f MB", n/1e6)
 }
 
+// imageID is an image id as image ls shows it (12 hex) or longer, sha256: or not.
+var imageID = regexp.MustCompile(`^(sha256:)?[0-9a-f]{12,64}$`)
+
 func imageRemove(client *dsm.Client, o options) error {
+	// Container Manager deletes by short id; a REPO:TAG would be cut to its tag ("1") and
+	// sent as an id, so anything that isn't an id is refused.
+	if !imageID.MatchString(o.name) {
+		return dsm.Errorf("image rm takes an image id (the IMAGE ID column of image ls), not %q", o.name)
+	}
 	if !o.force {
 		if err := confirmTyped("This deletes image "+o.name+".", o.name); err != nil {
 			return err
@@ -116,10 +125,22 @@ func imagePull(client *dsm.Client, o options) error {
 	if err != nil {
 		return err
 	}
+	remote, err := dsm.RegistryImageID(reg.URL, repo, tag, reg.User, reg.Password)
+	if err != nil {
+		return err
+	}
+	if remote == "" {
+		return dsm.Errorf("%s:%s is not in %s", repo, tag, reg.URL)
+	}
 	fmt.Fprintf(os.Stderr, "pulling %s:%s from %s\n", repo, tag, reg.URL)
 	if err := client.ImagePull(reg.URL, repo, tag, reg.User, reg.Password, time.Hour); err != nil {
 		return err
 	}
-	fmt.Printf("pulled %s/%s:%s\n", reg.Host, repo, tag)
+	// The NAS reports a pull finished whether or not it worked; the id says.
+	target := reg.Host + "/" + repo + ":" + tag
+	if err := client.CheckTags(map[string]string{target: remote}); err != nil {
+		return dsm.Errorf("pull of %s didn't land: %v", target, err)
+	}
+	fmt.Printf("pulled %s (%s)\n", target, remote)
 	return nil
 }

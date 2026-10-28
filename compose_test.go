@@ -44,3 +44,16 @@ func TestComposeContainerNamesRejectsBadYAML(t *testing.T) {
 		t.Error("expected an error for invalid YAML")
 	}
 }
+
+func TestComposeContainerNamesProjectName(t *testing.T) {
+	// compose lowercases the project name and drops what it doesn't allow; a top-level
+	// name: wins over the project's.
+	got, _ := composeContainerNames("services:\n  web:\n    image: x\n", "My Stack")
+	if len(got) != 1 || got[0] != "mystack-web-1" {
+		t.Errorf("got %v, want [mystack-web-1]", got)
+	}
+	got, _ = composeContainerNames("name: Other\nservices:\n  web:\n    image: x\n", "proj")
+	if len(got) != 1 || got[0] != "other-web-1" {
+		t.Errorf("got %v, want [other-web-1]", got)
+	}
+}

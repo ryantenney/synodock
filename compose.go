@@ -32,6 +32,7 @@ func composeImages(text string) []string {
 // since a build doesn't start them.
 func composeContainerNames(text, projectName string) ([]string, error) {
 	var file struct {
+		Name     string `yaml:"name"`
 		Services map[string]struct {
 			ContainerName string   `yaml:"container_name"`
 			Profiles      []string `yaml:"profiles"`
@@ -47,10 +48,31 @@ func composeContainerNames(text, projectName string) ([]string, error) {
 		}
 		name := svc.ContainerName
 		if name == "" {
-			name = projectName + "-" + service + "-1"
+			name = composeProjectName(firstNonEmpty(file.Name, projectName)) + "-" + service + "-1"
 		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// composeProjectName is a project name as compose normalises it: lowercase, keeping only
+// letters, digits, - and _ (so "My Stack" is "mystack").
+func composeProjectName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

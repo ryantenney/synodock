@@ -61,3 +61,17 @@ func TestOldImagesToDelete(t *testing.T) {
 		t.Errorf("kept %v, want Y held by worker:1.4", kept)
 	}
 }
+
+func TestImageRmTakesIDsOnly(t *testing.T) {
+	// Refused before any call: a REPO:TAG used to be cut to its tag and sent as an id.
+	for _, name := range []string{"omni/app:1", "app:2024", "latest", "4f344f96"} {
+		if err := imageRemove(nil, options{name: name, force: true}); err == nil {
+			t.Errorf("%q: accepted", name)
+		}
+	}
+	for _, id := range []string{"4f344f968ec8", "sha256:4f344f968ec8ab"} {
+		if !imageID.MatchString(id) {
+			t.Errorf("%q: not taken as an id", id)
+		}
+	}
+}

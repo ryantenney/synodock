@@ -282,10 +282,18 @@ func (c *Client) request(ctx context.Context, params url.Values, body io.Reader,
 	if token != "" {
 		req.Header.Set("X-SYNO-TOKEN", token)
 	}
+	client := c.http
 	if slow {
-		return c.slow.Do(req)
+		client = c.slow
 	}
-	return c.http.Do(req)
+	resp, err := client.Do(req)
+	// An upload's parameters, _sid included, are in the URL, and a transport error prints
+	// the URL; keep the session id out of messages.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		urlErr.URL = c.URL + "/webapi/entry.cgi"
+	}
+	return resp, err
 }
 
 type envelope struct {
