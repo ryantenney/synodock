@@ -79,6 +79,15 @@ func TestParse(t *testing.T) {
 		{[]string{"image", "load", "x.tar"}, "", 2, nil},
 		{[]string{"image", "import"}, "", 2, nil},
 		{[]string{"image", "pull", "x"}, "image pull", 0, nil}, // missing flags are checked at run time
+		{[]string{"network", "ls"}, "network ls", 0, nil},
+		{[]string{"network", "inspect", "edge"}, "network inspect", 0, nil},
+		{[]string{"network", "create", "n", "--subnet", "10.0.0.0/24", "--gateway", "10.0.0.1", "--disable-masquerade"},
+			"network create", 0, func(o options) bool {
+				return o.name == "n" && o.subnet == "10.0.0.0/24" && o.gateway == "10.0.0.1" && o.noMasquerade
+			}},
+		{[]string{"network", "rm", "-f", "n"}, "network rm", 0, func(o options) bool { return o.force && o.name == "n" }},
+		{[]string{"network", "rm"}, "", 2, nil},
+		{[]string{"network", "create", "n", "x"}, "", 2, nil},
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

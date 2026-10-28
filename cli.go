@@ -53,6 +53,7 @@ var groups = []group{
 	{"service", "run serve as a service launchd/systemd starts on demand"},
 	{"project", "Container Manager projects: list, config, ps, create, update, up, down, start, stop, restart"},
 	{"image", "images on the NAS: list, rm, import, load, pull"},
+	{"network", "Docker networks: list, inspect, create, rm"},
 }
 
 // shortcuts are top-level names for commands in a group, as docker's ps and exec.
@@ -172,6 +173,21 @@ var commands = []*command{
 	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
 	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},
 
+	{group: "network", name: "ls", aliases: []string{"list"}, short: "networks, with their subnets and containers"},
+	{group: "network", name: "inspect", args: "NAME", short: "one network, and the containers on it", positional: one},
+	{group: "network", name: "create", opts: "--subnet CIDR --gateway IP [--iprange CIDR] [--disable-masquerade]", args: "NAME",
+		short: "create a network with a fixed subnet",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.subnet, "subnet", "", "the network's address range, e.g. 172.31.0.0/16")
+			fs.StringVar(&o.gateway, "gateway", "", "the gateway address inside the subnet")
+			fs.StringVar(&o.iprange, "iprange", "", "addresses containers get, when narrower than the subnet")
+			fs.BoolVar(&o.noMasquerade, "disable-masquerade", false, "don't NAT outbound traffic")
+		}, positional: one},
+	{group: "network", name: "rm", opts: "[-f]", args: "NAME",
+		short: "delete a network with no containers on it; asks for the name unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}, positional: one},
 	{group: "image", name: "ls", aliases: []string{"list"}, short: "images, one row per tag"},
 	{group: "image", name: "rm", opts: "[-f]", args: "ID", short: "delete an image by id; asks for the id unless -f",
 		flags: func(fs *pflag.FlagSet, o *options) {

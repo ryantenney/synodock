@@ -42,31 +42,35 @@ import (
 const version = "0.1.0"
 
 type options struct {
-	sel       dsm.Selection
-	cmd       string
-	use       string
-	unnamed   bool
-	context   string
-	idle      time.Duration
-	idleSet   bool // --idle-exit given
-	noCtx     bool
-	otp       string
-	all       bool
-	name      string
-	tail      int
-	keyword   string
-	argv      []string
-	exec      terminal.RunOptions
-	socket    string
-	verbose   bool
-	noGzip    bool
-	file      string // project create/update: the compose file
-	sharePath string // project create: the folder, default /docker/NAME
-	outFile   string // project config: write to this file, not stdout
-	force     bool   // project rm: no confirmation
-	folder    string // image load: the NAS folder for the tar
-	registry  string // image pull: the registry URL
-	user      string // image pull: the registry account
+	sel          dsm.Selection
+	cmd          string
+	use          string
+	unnamed      bool
+	context      string
+	idle         time.Duration
+	idleSet      bool // --idle-exit given
+	noCtx        bool
+	otp          string
+	all          bool
+	name         string
+	tail         int
+	keyword      string
+	argv         []string
+	exec         terminal.RunOptions
+	socket       string
+	verbose      bool
+	noGzip       bool
+	file         string // project create/update: the compose file
+	sharePath    string // project create: the folder, default /docker/NAME
+	outFile      string // project config: write to this file, not stdout
+	force        bool   // project rm: no confirmation
+	folder       string // image load: the NAS folder for the tar
+	subnet       string // network create
+	gateway      string // network create
+	iprange      string // network create
+	noMasquerade bool   // network create: --disable-masquerade
+	registry     string // image pull: the registry URL
+	user         string // image pull: the registry account
 }
 
 func main() {
@@ -183,6 +187,8 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return projectCommand(client, o)
 	case "image ls", "image rm", "image import", "image load", "image pull":
 		return imageCommand(client, o)
+	case "network ls", "network inspect", "network create", "network rm":
+		return networkCommand(client, o)
 	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
 
