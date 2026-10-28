@@ -793,6 +793,9 @@ func (c *Client) ImageIDsByTag() (map[string]string, error) {
 	out := map[string]string{}
 	for _, img := range images {
 		for _, tag := range img.Tags {
+			if tag == "<none>" { // how the list shows an untagged image: not a tag
+				continue
+			}
 			out[img.Repository+":"+tag] = img.ID
 		}
 	}
