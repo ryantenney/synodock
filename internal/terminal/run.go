@@ -17,14 +17,18 @@ import (
 type RunOptions struct {
 	Stdin, TTY, Raw, Detach bool
 	Gzip                    bool
+	User                    string
 }
 
 // Run is `synodock exec`: it returns the command's exit code (0 once started,
 // with Detach).
 func Run(ctx context.Context, client *dsm.Client, container string, argv []string, o RunOptions) (int, error) {
+	if o.Raw && o.User != "" {
+		return 0, dsm.Errorf("--raw runs the command without a shell, so it can't take -u")
+	}
 	rows, cols := terminalSize()
 	if o.Detach || !(o.Stdin || o.TTY || o.Raw) {
-		command := CommandFor(argv, Options{Raw: o.Raw, Detach: o.Detach, Gzip: o.Gzip})
+		command := CommandFor(argv, Options{Raw: o.Raw, Detach: o.Detach, Gzip: o.Gzip, User: o.User})
 		s, err := Open(ctx, client, container, command, rows, cols)
 		if err != nil {
 			return 0, err
@@ -49,7 +53,7 @@ func Run(ctx context.Context, client *dsm.Client, container string, argv []strin
 	if !interactive {
 		fmt.Fprintln(os.Stderr, "synodock exec: unframed mode, output may arrive out of order")
 	}
-	command := CommandFor(argv, Options{Unframed: true, Interactive: interactive, Stdin: stdin, Raw: o.Raw})
+	command := CommandFor(argv, Options{Unframed: true, Interactive: interactive, Stdin: stdin, Raw: o.Raw, User: o.User})
 	var input io.Reader
 	if stdin {
 		input = os.Stdin

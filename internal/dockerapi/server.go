@@ -714,10 +714,6 @@ func (s *server) execCreate(w *response, r *http.Request, q query, p []string) e
 	if len(config.Cmd) == 0 {
 		return apiErrorf(400, "No exec command specified")
 	}
-	if config.User != "" {
-		return apiErrorf(501, "exec --user is not supported by the DSM adapter (Container Manager's "+
-			"terminal runs as the container's user)")
-	}
 	if config.Privileged {
 		return apiErrorf(501, "exec --privileged is not supported by the DSM adapter")
 	}
@@ -849,7 +845,7 @@ func (s *server) execStart(w *response, r *http.Request, q query, p []string) er
 		rows, cols = size[0], size[1]
 	}
 	command := terminal.CommandFor(ex.argv(), terminal.Options{Unframed: !framed, Interactive: tty, Stdin: stdin,
-		Gzip: terminal.GzipDefault()})
+		Gzip: terminal.GzipDefault(), User: ex.config.User})
 	if !framed && !tty {
 		_ = write([]byte("synodock exec: unframed mode (-i), output may arrive out of order\n"), 2)
 	}
@@ -907,7 +903,7 @@ func (s stdinReader) Read(p []byte) (int, error) {
 // with no exit code; a command that doesn't exist fails here, as with dockerd.
 func (s *server) execDetached(w *response, r *http.Request, ex *Exec) error {
 	var out bytes.Buffer
-	command := terminal.CommandFor(ex.argv(), terminal.Options{Detach: true})
+	command := terminal.CommandFor(ex.argv(), terminal.Options{Detach: true, User: ex.config.User})
 	session, err := terminal.Open(r.Context(), s.adapter.dsm, ex.container.Name, command, 24, 200)
 	if err != nil {
 		ex.finish(nil)

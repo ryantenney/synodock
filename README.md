@@ -159,12 +159,19 @@ $ synodock --nas home service install       # serve started on demand by launchd
 
 ### exec
 
-- It always runs on a TTY, as the container's default user: stderr comes back with
-  stdout, and there's no `--user`.
+- It runs as the container's default user, often root, unless `-u USER` (a name, a uid,
+  or `user:group`): the command is wrapped in whatever the image has to switch user,
+  util-linux's `setpriv`, `gosu`, `su-exec`, or `su` (busybox's too, which takes names
+  only, so a uid is looked up and `user:group` needs one of the others). `-u` needs the
+  exec to run as root, and can't be used with `--raw`.
+- By default stdout and stderr come back apart, as `docker exec` without `-t` gives them;
+  with `-i`, `-t` or `--raw` they're merged, as on a terminal. Order between the two
+  streams is as they arrive.
 - By default the output is framed: in the container, `dd` cuts it into chunks, each
   is gzipped and hex-encoded by `od`, and `awk` sends them as records acknowledged
-  one at a time. The output arrives complete, in order and binary-safe, slow output
-  stays live, and the exit status is exact. That needs `sh`, `dd`, `od` and `awk` in
+  one at a time, each with a checksum (the relay splits and reorders pieces of a record;
+  the checksum puts them back in order). The output arrives complete, in order and
+  binary-safe, slow output stays live, and the exit status is exact. That needs `sh`, `dd`, `od` and `awk` in
   the image (tested on Debian and busybox-based images); gzip is used when
   present (`--no-gzip` or `SYNODOCK_GZIP=0` turns it off).
 - `-i`, `-it` and `--raw` pass output through as it arrives, and it **can arrive out

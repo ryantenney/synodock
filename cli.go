@@ -169,13 +169,15 @@ var commands = []*command{
 			o.name = rest[0]
 			return true
 		}},
-	{group: "container", name: "exec", opts: "[-i] [-t] [-d]", args: "NAME [--] COMMAND...",
+	{group: "container", name: "exec", opts: "[-i] [-t] [-d] [-u USER]", args: "NAME [--] COMMAND...",
 		short: "run a command in a running container", commandArgs: true,
-		note: "Runs through Container Manager's Terminal: always on a TTY, as the container's default user, so stderr comes back with stdout.",
+		note: "Runs through Container Manager's Terminal, on a TTY, as the container's default user unless -u. Without -i or -t, " +
+			"stdout and stderr come back apart; with them, merged, as docker's -t does.",
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.BoolVarP(&o.exec.Stdin, "interactive", "i", false, "send stdin to the command")
 			fs.BoolVarP(&o.exec.TTY, "tty", "t", false, "with -i on a terminal: raw mode, resize, ^C goes through")
 			fs.BoolVarP(&o.exec.Detach, "detach", "d", false, "start it in the background and return; output discarded")
+			fs.StringVarP(&o.exec.User, "user", "u", "", "run as this user: a name, uid, or user:group (needs setpriv, gosu, su-exec or su in the image)")
 			fs.BoolVar(&o.exec.Raw, "raw", false, "don't wrap in sh (images without one); no exit status")
 			fs.BoolVar(&o.noGzip, "no-gzip", false, "don't compress output in the container (SYNODOCK_GZIP=0 does the same)")
 		},

@@ -34,6 +34,8 @@ func TestCommandsMatchGolden(t *testing.T) {
 		"unframed_stdin":       CommandFor(argv, Options{Unframed: true, Stdin: true}),
 		"unframed":             CommandFor(argv, Options{Unframed: true}),
 		"join":                 Join(argv),
+		"framed_user":          CommandFor(argv, Options{User: "nobody"}),
+		"detach_user":          CommandFor(argv, Options{Detach: true, User: "1000:1000"}),
 	}
 	if os.Getenv("UPDATE_GOLDEN") == "1" { // after a deliberate change to the scripts
 		out, _ := json.MarshalIndent(got, "", "  ")

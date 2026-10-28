@@ -100,6 +100,38 @@ if command -v setsid >/dev/null 2>&1; then setsid "$@" </dev/null >/dev/null 2>&
 else "$@" </dev/null >/dev/null 2>&1 &
 fi`
 
+// asUser runs "$@" as the user in $1 (a name, a uid, or user:group), as docker exec -u
+// does, with whatever the image has to switch user: util-linux's setpriv (keeps the
+// environment and working directory, takes numeric ids; busybox has a setpriv too, without
+// --reuid, so it's asked first), gosu, su-exec, then su -m
+// (busybox's too), which keeps the container's environment as docker's -u does. It needs
+// the exec to run as root, which Container Manager's Terminal does unless the image
+// sets another USER.
+const asUser = `u=$1; shift
+if [ "$(id -u)" != 0 ]; then
+  echo "synodock exec: -u needs the exec to run as root; it runs as $(id -un 2>/dev/null || id -u)" >&2; exit 126; fi
+if setpriv --help 2>&1 | grep -q -- --reuid; then
+  case $u in
+    *:*) exec setpriv --reuid="${u%%:*}" --regid="${u#*:}" --clear-groups "$@";;
+    *[!0-9]*) g=$(id -g "$u") || exit 126; exec setpriv --reuid="$u" --regid="$g" --init-groups "$@";;
+    *) g=$(id -g "$u" 2>/dev/null) || g=0; exec setpriv --reuid="$u" --regid="$g" --clear-groups "$@";;
+  esac
+fi
+for t in gosu su-exec; do
+  if command -v $t >/dev/null 2>&1; then exec $t "$u" "$@"; fi
+done
+if command -v su >/dev/null 2>&1; then
+  case $u in
+    *:*) echo "synodock exec: -u USER:GROUP needs setpriv, gosu or su-exec in the image; it has only su" >&2; exit 127;;
+    *[!0-9]*) ;;
+    *) n=$(awk -F: -v id="$u" '$3 == id { print $1; exit }' /etc/passwd)
+       if [ -z "$n" ]; then echo "synodock exec: uid $u has no name in /etc/passwd, which su needs" >&2; exit 127; fi
+       u=$n;;
+  esac
+  exec su -m -s /bin/sh "$u" -c 'exec "$0" "$@"' -- "$@" # -- or busybox su takes the command's own -c
+fi
+echo "synodock exec: the image has no setpriv, gosu, su-exec or su to run as $u" >&2; exit 127`
+
 // Unframed: the exit status is a marker after the output (it can be overtaken too).
 const (
 	marker = "\x1e__dsm_exit="
@@ -145,13 +177,17 @@ type Options struct {
 	Stdin       bool // unframed, input to come
 	Raw         bool // no sh around it, no exit status
 	Detach      bool
-	Gzip        bool // framed: compress each chunk in the container
+	Gzip        bool   // framed: compress each chunk in the container
+	User        string // run as this user (docker exec -u); not with Raw
 }
 
 // CommandFor is the command line for Terminal's "create".
 func CommandFor(argv []string, o Options) string {
 	if o.Detach {
 		argv = append([]string{"sh", "-c", detach, "sh"}, argv...)
+	}
+	if o.User != "" { // outermost, so with -d the background command runs as the user too
+		argv = append([]string{"sh", "-c", asUser, "sh", o.User}, argv...)
 	}
 	if o.Raw {
 		return Join(argv)

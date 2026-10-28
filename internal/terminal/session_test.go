@@ -357,3 +357,33 @@ cat "$1" & cat "$1" >&2 & wait; exit 3`
 		}
 	}
 }
+
+func TestUser(t *testing.T) {
+	client, _ := fakeClient(t)
+	if os.Getenv("SYNODOCK_TEST_IMAGE") == "" {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root here: the refusal can't be seen")
+		}
+		// Not root, as these tests run outside a container: -u refuses, and says why.
+		_, errOut, code := runFramedStreams(t, client, []string{"id", "-un"}, Options{User: "nobody"})
+		if code != 126 || !strings.Contains(string(errOut), "needs the exec to run as root") {
+			t.Errorf("exit %d, stderr %q", code, errOut)
+		}
+		return
+	}
+	// In the image (as root): by name, by uid, and as uid:gid.
+	for _, tc := range []struct{ user, want string }{
+		{"nobody", "nobody"},
+		{"65534", "65534"},
+		{"65534:65534", "65534 65534"},
+	} {
+		argv := []string{"sh", "-c", `case $1 in *:*) echo "$(id -u) $(id -g)";; *[!0-9]*) id -un;; *) id -u;; esac`, "sh", tc.user}
+		out, errOut, code := runFramedStreams(t, client, argv, Options{User: tc.user})
+		if code == 127 && strings.Contains(string(errOut), "USER:GROUP needs setpriv") {
+			continue // an image with only su (busybox): refused, and said why
+		}
+		if code != 0 || strings.TrimSpace(string(out)) != tc.want {
+			t.Errorf("-u %s: exit %d, stdout %q, stderr %q; want %q", tc.user, code, out, errOut, tc.want)
+		}
+	}
+}
