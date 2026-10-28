@@ -258,6 +258,16 @@ var commands = []*command{
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
 		}, positional: one},
+	{group: "image", name: "save", opts: "--to FOLDER", args: "REPO[:TAG]",
+		short: "save an image as a docker save tar in a NAS folder, named by Container Manager",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.folder, "to", "", "the NAS folder; it must exist")
+		}, positional: one},
+	{group: "image", name: "prune", opts: "[-f]",
+		short: "delete the images no container uses; lists them, then asks for the word prune unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}},
 	{group: "image", name: "import", args: "PATH", short: "load a docker save tar already on the NAS", positional: onePath},
 	{group: "image", name: "load", args: "TAR FOLDER",
 		short:      "upload a docker save tar to a NAS folder and load it; the old tar there is kept as .prev.tar",

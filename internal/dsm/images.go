@@ -152,3 +152,17 @@ func (c *Client) lastDockerError() (string, error) {
 	}
 	return "", nil
 }
+
+// ImageExport saves repo:tag as a docker save tar in a NAS folder, as Container Manager's
+// Export does. The folder must exist.
+func (c *Client) ImageExport(repo, tag, folder string) error {
+	_, err := c.Call("SYNO.Docker.Image", "export", 1, Params{"repo": JS(repo), "tag": JS(tag), "path": JS(folder)})
+	return err
+}
+
+// ImagePrune deletes the images no container uses, as Container Manager's Remove Unused
+// Images does.
+func (c *Client) ImagePrune() error {
+	_, err := c.Call("SYNO.Docker.Image", "prune", 1, nil)
+	return err
+}
