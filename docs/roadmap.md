@@ -92,3 +92,21 @@ compared with `docker exec`, roughly in the order to build it.
 | `docker cp` in | after framed stdin | tar through framed stdin; for paths on a bind mount, FileStation upload is faster and already works | medium | |
 | `docker attach` | technically | the Terminal tab's first entry (id = container name) is PID 1's console. A stray `^C` stops the container, so keep refusing it, or require an explicit flag | small, risky | not planned |
 | `--privileged`, exec in a stopped container | no | DSM's exec has no such option; docker can't exec in a stopped container either | | not possible |
+
+## Audit (2026-10-28)
+
+An independent review of everything added since the noun groups found 19 issues;
+the fixes are in commits dbf38a3 through 3862535. Still open:
+
+- **Health wait on `unhealthy`.** It waits out the timeout rather than failing at
+  once, since a container can recover from unhealthy; a grace period would let it
+  fail sooner without false failures.
+- **start/stop/restart exit codes.** They rely on the stream printing `Exit Code:`,
+  as dsm.py did (its `restart proxy` worked); not run separately here.
+- **The session id in upload URLs.** It's out of error messages now, but the NAS's
+  own web access log still sees it. Sending it as a cookie needs a live test.
+- **No end-to-end test of deploy.** `containerReady`, old-image selection and the
+  parsing are unit-tested; `projectDeploy` itself is tested only live, on throwaway
+  projects. A fake DSM like the serve tests' would cover it.
+- **`--service`** (single-service deploys) and a registry reachable at different
+  addresses from the Mac and the NAS (dsm.py's `DSM_REGISTRY_PULL`) are dsm.py-only.
