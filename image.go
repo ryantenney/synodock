@@ -12,10 +12,6 @@ import (
 	"github.com/ryantenney/synodock/internal/dsm"
 )
 
-// registryPasswordEnv holds the password for image pull, which takes the account's
-// password as its own argument, never from a keychain. Step 5 (registries) will own this.
-const registryPasswordEnv = "SYNODOCK_REGISTRY_PASSWORD"
-
 // imageCommand runs one image command and returns the exit code.
 func imageCommand(client *dsm.Client, o options) (int, error) {
 	switch o.cmd {

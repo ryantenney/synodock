@@ -88,6 +88,17 @@ func TestParse(t *testing.T) {
 		{[]string{"network", "rm", "-f", "n"}, "network rm", 0, func(o options) bool { return o.force && o.name == "n" }},
 		{[]string{"network", "rm"}, "", 2, nil},
 		{[]string{"network", "create", "n", "x"}, "", 2, nil},
+		{[]string{"registry", "ls"}, "registry ls", 0, nil},
+		{[]string{"registry", "add", "--user", "u", "r", "https://r.example"}, "registry add", 0, func(o options) bool {
+			return o.name == "r" && o.registry == "https://r.example" && o.user == "u"
+		}},
+		{[]string{"registry", "add", "r"}, "", 2, nil},
+		{[]string{"registry", "rm", "-f", "r"}, "registry rm", 0, func(o options) bool { return o.force && o.name == "r" }},
+		{[]string{"registry", "use", "r"}, "registry use", 0, nil},
+		{[]string{"registry", "search", "-n", "3", "alpine"}, "registry search", 0, func(o options) bool {
+			return o.name == "alpine" && o.tail == 3
+		}},
+		{[]string{"registry", "tags", "library/alpine"}, "registry tags", 0, nil},
 		{[]string{"service", "status"}, "service status", 0, nil},
 		{[]string{"--nas", "home", "service", "uninstall"}, "service uninstall", 0, func(o options) bool { return o.sel.NAS == "home" }},
 		{[]string{"login", "--otp", "123456"}, "login", 0, func(o options) bool { return o.otp == "123456" }},

@@ -189,6 +189,8 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return imageCommand(client, o)
 	case "network ls", "network inspect", "network create", "network rm":
 		return networkCommand(client, o)
+	case "registry ls", "registry add", "registry rm", "registry use", "registry search", "registry tags":
+		return registryCommand(client, o)
 	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
 

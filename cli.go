@@ -54,6 +54,7 @@ var groups = []group{
 	{"project", "Container Manager projects: list, config, ps, create, update, up, down, start, stop, restart"},
 	{"image", "images on the NAS: list, rm, import, load, pull"},
 	{"network", "Docker networks: list, inspect, create, rm"},
+	{"registry", "registries Container Manager pulls from: list, add, rm, use, search, tags"},
 }
 
 // shortcuts are top-level names for commands in a group, as docker's ps and exec.
@@ -90,6 +91,15 @@ func tarAndFolder(o *options, rest []string) bool {
 		return false
 	}
 	o.file, o.folder = rest[0], rest[1]
+	return true
+}
+
+// twoRegistry takes NAME and URL.
+func twoRegistry(o *options, rest []string) bool {
+	if len(rest) != 2 {
+		return false
+	}
+	o.name, o.registry = rest[0], rest[1]
 	return true
 }
 
@@ -173,6 +183,24 @@ var commands = []*command{
 	{group: "project", name: "stop", args: "NAME", short: "compose stop", positional: one},
 	{group: "project", name: "restart", args: "NAME", short: "compose restart", positional: one},
 
+	{group: "registry", name: "ls", aliases: []string{"list"}, short: "registries; * marks the one in use"},
+	{group: "registry", name: "add", opts: "[--user NAME]", args: "NAME URL",
+		short: "add a registry; a password comes from SYNODOCK_REGISTRY_PASSWORD",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.StringVar(&o.user, "user", "", "the account, for a registry that needs one")
+		}, positional: twoRegistry},
+	{group: "registry", name: "rm", opts: "[-f]", args: "NAME",
+		short: "remove a registry (not the one in use); asks for the name unless -f",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.BoolVarP(&o.force, "force", "f", false, "don't ask")
+		}, positional: one},
+	{group: "registry", name: "use", args: "NAME", short: "make a registry the one in use", positional: one},
+	{group: "registry", name: "search", opts: "[-n N]", args: "QUERY",
+		short: "search the registry in use (Docker Hub, by default)",
+		flags: func(fs *pflag.FlagSet, o *options) {
+			fs.IntVarP(&o.tail, "limit", "n", 10, "at most this many results")
+		}, positional: one},
+	{group: "registry", name: "tags", args: "REPO", short: "a repository's tags, in the registry in use", positional: one},
 	{group: "network", name: "ls", aliases: []string{"list"}, short: "networks, with their subnets and containers"},
 	{group: "network", name: "inspect", args: "NAME", short: "one network, and the containers on it", positional: one},
 	{group: "network", name: "create", opts: "--subnet CIDR --gateway IP [--iprange CIDR] [--disable-masquerade]", args: "NAME",
