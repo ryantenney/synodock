@@ -3,6 +3,8 @@ package dsm
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -22,5 +24,25 @@ func TestTransportErrorHidesSessionID(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SECRETSID123") {
 		t.Errorf("session id in error: %v", err)
+	}
+}
+
+func TestUploadSendsSessionAsCookie(t *testing.T) {
+	var gotURL, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		if ck, err := r.Cookie("id"); err == nil {
+			gotCookie = ck.Value
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer srv.Close()
+	c := NewClient(context.Background(), &Config{URL: srv.URL, User: "u"})
+	c.sid = "SECRETSID123"
+	if err := c.FSPutBytes([]byte("x"), "f", "/docker", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(gotURL, "SECRETSID123") || gotCookie != "SECRETSID123" {
+		t.Errorf("url %q, cookie %q: the session belongs in the cookie, not the URL", gotURL, gotCookie)
 	}
 }

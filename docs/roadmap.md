@@ -96,15 +96,12 @@ compared with `docker exec`, roughly in the order to build it.
 ## Audit (2026-10-28)
 
 An independent review of everything added since the noun groups found 19 issues;
-the fixes are in commits dbf38a3 through 3862535. Still open:
-
-- **Health wait on `unhealthy`.** It waits out the timeout rather than failing at
-  once, since a container can recover from unhealthy; a grace period would let it
-  fail sooner without false failures.
-- **start/stop/restart exit codes.** They rely on the stream printing `Exit Code:`,
-  as dsm.py did (its `restart proxy` worked); not run separately here.
-- **The session id in upload URLs.** It's out of error messages now, but the NAS's
-  own web access log still sees it. Sending it as a cookie needs a live test.
+the fixes are in commits dbf38a3 through 3862535. The open items it left are closed too:
+an unhealthy container now fails the health wait after two minutes rather than at the
+timeout (2ab6bd4); start, stop and restart were run on a throwaway project and each
+reports its exit code; uploads send the session as the `id` cookie instead of in the URL,
+checked live with an image load; and a registry reachable at another address from the
+NAS has `registry_pull` (68425bc).
 
 `--service` and an end-to-end deploy test have since landed: `project deploy --service`
 replaces one container while the rest keeps running, blocked by the same checks as dsm.py

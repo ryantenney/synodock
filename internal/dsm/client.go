@@ -262,15 +262,17 @@ func (c *Client) request(ctx context.Context, params url.Values, body io.Reader,
 	c.mu.Lock()
 	sid, token := c.sid, c.token
 	c.mu.Unlock()
-	if sid != "" {
-		params.Set("_sid", sid)
-	}
 	endpoint := c.URL + "/webapi/entry.cgi"
 	if body == nil {
+		if sid != "" {
+			params.Set("_sid", sid)
+		}
 		encoded := params.Encode()
 		body, length = strings.NewReader(encoded), int64(len(encoded))
 		contentType = "application/x-www-form-urlencoded"
 	} else {
+		// An upload's parameters go in the URL, which the NAS's web server logs; the session
+		// goes in the id cookie instead, as the DSM web UI sends it.
 		endpoint += "?" + params.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, body)
@@ -281,6 +283,9 @@ func (c *Client) request(ctx context.Context, params url.Values, body io.Reader,
 	req.Header.Set("Content-Type", contentType)
 	if token != "" {
 		req.Header.Set("X-SYNO-TOKEN", token)
+	}
+	if sid != "" && params.Get("_sid") == "" {
+		req.AddCookie(&http.Cookie{Name: "id", Value: sid})
 	}
 	client := c.http
 	if slow {
