@@ -200,6 +200,9 @@ var commands = []*command{
 		short: "take it down, load new images, update the compose file, build, wait healthy, then clean up old images",
 		flags: func(fs *pflag.FlagSet, o *options) {
 			fs.StringArrayVar(&o.images, "image", nil, "a docker save tar to load (repeatable)")
+			fs.StringArrayVar(&o.pulls, "pull", nil, "a registry image, REPO[:TAG], to pull (repeatable; needs --registry and --user)")
+			fs.StringVar(&o.registry, "registry", "", "the registry's URL, for --pull")
+			fs.StringVar(&o.user, "user", "", "the registry account, for --pull")
 			fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
 			fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
 			fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and stop")

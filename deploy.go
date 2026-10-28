@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/ryantenney/synodock/internal/dsm"
 )
+
+// deployPull is one registry image a deploy pulls: its repo and tag, the name the NAS
+// gives it, and the id the registry says it has.
+type deployPull struct {
+	repo, tag, target, remote string
+	current                   bool // the NAS already has this exact image
+}
 
 // deployTar is a docker save tar to load for a deploy, read once up front.
 type deployTar struct {
@@ -44,6 +52,12 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	}
 	composeChanged := target != current
 	folder := strings.TrimSuffix(o.folder, "/")
+	if len(o.pulls) > 0 && (o.registry == "" || o.user == "") {
+		return 0, dsm.Errorf("deploy --pull needs --registry and --user")
+	}
+	if len(o.pulls) > 0 && os.Getenv(registryPasswordEnv) == "" {
+		return 0, dsm.Errorf("set %s to the registry password for %s", registryPasswordEnv, o.user)
+	}
 	if folder == "" {
 		folder = p.SharePath + "/images"
 	}
@@ -106,6 +120,36 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 			return 0, err
 		}
 	}
+	// Registry images: each REF is checked against the registry, and pulled onto the NAS
+	// under the name the NAS gives it, host/repo:tag. Its image id must match the registry's.
+	var pulls []deployPull
+	for _, ref := range o.pulls {
+		repo, tag := splitRef(ref)
+		u, err := url.Parse(o.registry)
+		if err != nil {
+			return 0, err
+		}
+		target := u.Host + "/" + repo + ":" + tag
+		remote, err := dsm.RegistryImageID(o.registry, repo, tag, o.user, os.Getenv(registryPasswordEnv))
+		if err != nil {
+			return 0, err
+		}
+		if remote == "" {
+			problems = append(problems, fmt.Sprintf("%s:%s is not in %s (push it first)", repo, tag, o.registry))
+			continue
+		}
+		if !inCompose[target] {
+			problems = append(problems, fmt.Sprintf("the compose file doesn't use %s; switch that service's image to it "+
+				"(pass the edited file with --compose)", target))
+		}
+		pl := deployPull{repo: repo, tag: tag, target: target, remote: remote}
+		if dsm.ShortID(currentIDs[target]) == remote {
+			pl.current = true
+		} else if id, ok := currentIDs[target]; ok {
+			replaced[target] = id
+		}
+		pulls = append(pulls, pl)
+	}
 	stale, err := client.StaleNames(p)
 	if err != nil {
 		return 0, err
@@ -122,7 +166,13 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 		problems = append(problems, fmt.Sprintf("not enough free space: %.1f GB free, about %.1f GB wanted",
 			float64(free)/1e9, float64(need)/1e9))
 	}
-	if len(uploads) == 0 && !composeChanged {
+	var pullNow []deployPull
+	for _, pl := range pulls {
+		if !pl.current {
+			pullNow = append(pullNow, pl)
+		}
+	}
+	if len(uploads) == 0 && len(pullNow) == 0 && !composeChanged && len(problems) == 0 {
 		problems = append(problems, "nothing to deploy: no new image and the compose file is unchanged")
 	}
 
@@ -134,6 +184,13 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	}
 	for _, t := range uploads {
 		fmt.Printf("  image  %s (%.0f MB) -> %s  tags=%s\n", t.name, float64(t.size)/1e6, folder, strings.Join(t.info.Tags, ", "))
+	}
+	for _, pl := range pulls {
+		if pl.current {
+			fmt.Printf("  skip   %s: already the registry's image (%s)\n", pl.target, pl.remote)
+		} else {
+			fmt.Printf("  pull   %s (%s) from %s\n", pl.target, pl.remote, o.registry)
+		}
 	}
 	oldAction := "deleted after healthy"
 	if o.keepOld {
@@ -151,8 +208,15 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 	if composeChanged {
 		steps = "clean (DOWN) -> compose update -> "
 	}
+	var before []string
 	if len(uploads) > 0 {
-		steps = "upload + load (still up) -> " + steps
+		before = append(before, "upload + load")
+	}
+	if len(pullNow) > 0 {
+		before = append(before, "pull")
+	}
+	if len(before) > 0 {
+		steps = strings.Join(before, " + ") + " (still up) -> " + steps
 	}
 	fmt.Printf("  steps  %sbuild -> wait healthy for %s\n", steps, strings.Join(expected, ", "))
 	for _, msg := range problems {
@@ -185,6 +249,20 @@ func projectDeploy(client *dsm.Client, o options) (int, error) {
 		}
 		if err := client.ImageImport(folder+"/"+t.name, expect, 30*time.Minute); err != nil {
 			return 1, err
+		}
+	}
+
+	for _, pl := range pullNow {
+		fmt.Fprintf(os.Stderr, "pulling %s\n", pl.target)
+		if err := client.ImagePull(o.registry, pl.repo, pl.tag, o.user, os.Getenv(registryPasswordEnv), time.Hour); err != nil {
+			return 1, err
+		}
+		got, err := client.ImageIDsByTag()
+		if err != nil {
+			return 1, err
+		}
+		if dsm.ShortID(got[pl.target]) != pl.remote {
+			return 1, dsm.Errorf("after pulling, %s is %s, expected %s", pl.target, dsm.ShortID(got[pl.target]), pl.remote)
 		}
 	}
 
