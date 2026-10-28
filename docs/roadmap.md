@@ -105,8 +105,12 @@ the fixes are in commits dbf38a3 through 3862535. Still open:
   as dsm.py did (its `restart proxy` worked); not run separately here.
 - **The session id in upload URLs.** It's out of error messages now, but the NAS's
   own web access log still sees it. Sending it as a cookie needs a live test.
-- **No end-to-end test of deploy.** `containerReady`, old-image selection and the
-  parsing are unit-tested; `projectDeploy` itself is tested only live, on throwaway
-  projects. A fake DSM like the serve tests' would cover it.
-- **`--service`** (single-service deploys) and a registry reachable at different
-  addresses from the Mac and the NAS (dsm.py's `DSM_REGISTRY_PULL`) are dsm.py-only.
+- **A registry reachable at different addresses** from the Mac and the NAS (dsm.py's
+  `DSM_REGISTRY_PULL`) is dsm.py-only.
+
+`--service` and an end-to-end deploy test have since landed: `project deploy --service`
+replaces one container while the rest keeps running, blocked by the same checks as dsm.py
+(dependents, a shared image, other services' images and environment drift against compose
+and `.env`, key names only). On live omnivault its plan matches dsm.py's exactly (1302
+environment values compared, the same blocks). Deploy and `--service` run in tests against a
+stateful fake NAS (`deploy_e2e_test.go`), which found the `<none>` bug fixed in b52b631.

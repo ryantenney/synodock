@@ -18,8 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/ryantenney/synodock/internal/dsm"
 )
 
@@ -35,8 +33,8 @@ type deployNAS struct {
 	share      string // /docker/<name>
 	status     string
 	compose    string
-	containers map[string]string // container name -> image ref it runs
-	failWith   int               // a build's containers exit with this, when non-zero
+	containers map[string]*fakeContainer
+	failWith   int // a build's new containers exit with this, when non-zero
 
 	images   map[string]string // tag -> full image id
 	untagged map[string]string // full image id -> its repository, once its last tag moved
@@ -47,7 +45,7 @@ type deployNAS struct {
 
 func newDeployNAS(t *testing.T, project, compose string, images map[string]string) *deployNAS {
 	n := &deployNAS{t: t, project: project, share: "/docker/" + project, status: "RUNNING", compose: compose,
-		images: map[string]string{}, untagged: map[string]string{}, files: map[string][]byte{}, containers: map[string]string{}}
+		images: map[string]string{}, untagged: map[string]string{}, files: map[string][]byte{}, containers: map[string]*fakeContainer{}}
 	for tag, id := range images {
 		n.images[tag] = fullID(id)
 	}
@@ -57,30 +55,50 @@ func newDeployNAS(t *testing.T, project, compose string, images map[string]strin
 
 func fullID(short string) string { return "sha256:" + short + strings.Repeat("0", 64-len(short)) }
 
-// services parses the compose file into container name -> image ref.
-func (n *deployNAS) services() map[string]string {
-	var file struct {
-		Services map[string]struct {
-			Image         string `yaml:"image"`
-			ContainerName string `yaml:"container_name"`
-		} `yaml:"services"`
-	}
-	if err := yaml.Unmarshal([]byte(n.compose), &file); err != nil {
-		n.t.Fatalf("fake NAS: compose: %v", err)
-	}
-	out := map[string]string{}
-	for name, svc := range file.Services {
-		cname := svc.ContainerName
-		if cname == "" {
-			cname = n.project + "-" + name + "-1"
-		}
-		out[cname] = svc.Image
-	}
-	return out
+// fakeContainer is a container as Docker keeps it: it runs the image id it was created
+// with, whatever its tag names later, and the environment compose gave it then.
+type fakeContainer struct {
+	service, ref, imageID, status string
+	exit                          int
+	env                           []string
 }
 
+// build is compose up -d: it creates each missing container, from the image its tag names
+// now and the environment compose works out now, and leaves existing ones alone.
 func (n *deployNAS) build() {
-	n.containers = n.services()
+	services, err := parseServices(n.compose)
+	if err != nil {
+		n.t.Fatalf("fake NAS: %v", err)
+	}
+	files := map[string]map[string]*string{}
+	for path, data := range n.files {
+		if strings.HasPrefix(path, n.share+"/") {
+			files[strings.TrimPrefix(path, n.share+"/")] = dotenv(string(data))
+		}
+	}
+	for svcName, svc := range services {
+		cname := svc.ContainerName
+		if cname == "" {
+			cname = n.project + "-" + svcName + "-1"
+		}
+		if _, ok := n.containers[cname]; ok {
+			continue
+		}
+		c := &fakeContainer{service: svcName, ref: svc.Image, imageID: n.images[imageRef(svc.Image)], status: "running"}
+		if n.failWith != 0 {
+			c.status, c.exit = "exited", n.failWith
+		}
+		projectEnv := files[".env"]
+		if projectEnv == nil {
+			projectEnv = map[string]*string{}
+		}
+		for k, v := range svc.expectedEnv(projectEnv, files) {
+			if v != nil {
+				c.env = append(c.env, k+"="+*v)
+			}
+		}
+		n.containers[cname] = c
+	}
 	n.status = "RUNNING"
 }
 
@@ -128,7 +146,7 @@ func (n *deployNAS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n.compose = str("content")
 	case "SYNO.Docker.Project.clean_stream", "SYNO.Docker.Project.build_stream":
 		if strings.HasPrefix(call, "SYNO.Docker.Project.clean") {
-			n.containers, n.status = map[string]string{}, "STOPPED"
+			n.containers, n.status = map[string]*fakeContainer{}, "STOPPED"
 		} else {
 			n.build()
 		}
@@ -140,6 +158,28 @@ func (n *deployNAS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cs = append(cs, map[string]any{"name": name, "status": "running"})
 		}
 		data = map[string]any{"containers": cs}
+	case "SYNO.Docker.Container.stop", "SYNO.Docker.Container.start":
+		c := n.containers[str("name")]
+		if c == nil {
+			n.fail(w, 1201)
+			return
+		}
+		c.status = map[bool]string{true: "exited", false: "running"}[strings.HasSuffix(call, "stop")]
+	case "SYNO.Docker.Container.delete":
+		if c := n.containers[str("name")]; c == nil || c.status == "running" {
+			n.fail(w, 1201)
+			return
+		}
+		delete(n.containers, str("name"))
+	case "SYNO.FileStation.Download.download":
+		data, ok := n.files[list("path")[0]]
+		if !ok {
+			n.fail(w, 408)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+		return
 	case "SYNO.Docker.Image.list":
 		byID := map[string][]string{}
 		for tag, id := range n.images {
@@ -217,12 +257,10 @@ func (n *deployNAS) projectJSON(full bool) map[string]any {
 		"share_path": n.share, "status": n.status}
 	if full {
 		var cs []map[string]any
-		for name, ref := range n.containers {
-			state := map[string]any{"Status": "running"}
-			if n.failWith != 0 {
-				state = map[string]any{"Status": "exited", "ExitCode": n.failWith}
-			}
-			cs = append(cs, map[string]any{"Name": "/" + name, "State": state, "Config": map[string]any{"Image": ref},
+		for name, c := range n.containers {
+			cs = append(cs, map[string]any{"Name": "/" + name, "Image": c.imageID,
+				"State":      map[string]any{"Status": c.status, "ExitCode": c.exit},
+				"Config":     map[string]any{"Image": c.ref, "Env": c.env, "Labels": map[string]string{"com.docker.compose.service": c.service}},
 				"HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}})
 		}
 		p["content"], p["containers"] = n.compose, cs
@@ -268,8 +306,8 @@ func (n *deployNAS) deleteImage(short string) string {
 		return "no such image"
 	}
 	delete(n.untagged, id)
-	for _, ref := range n.containers {
-		if n.images[ref] == id {
+	for _, c := range n.containers {
+		if c.imageID == id {
 			return "in use"
 		}
 	}
@@ -408,7 +446,7 @@ func TestDeployComposeChangeBacksUpBeforeGoingDown(t *testing.T) {
 	if clean := nas.indexOf("SYNO.Docker.Project.clean_stream"); uploadIdx < 0 || uploadIdx > clean {
 		t.Errorf("backup at %d, clean at %d: the backup has to come first", uploadIdx, clean)
 	}
-	if !strings.Contains(nas.compose, "omni/app:2") || nas.containers["app"] != "omni/app:2" {
+	if !strings.Contains(nas.compose, "omni/app:2") || nas.containers["app"].ref != "omni/app:2" {
 		t.Errorf("the new compose isn't running: %q %v", nas.compose, nas.containers)
 	}
 }
@@ -468,4 +506,109 @@ func (n *deployNAS) tagged(id string) bool {
 		}
 	}
 	return false
+}
+
+const twoServices = `services:
+  api:
+    image: omni/api:latest
+    container_name: api
+    environment:
+      - API_KEY=${API_KEY}
+  db:
+    image: postgres:16
+    container_name: db
+    environment:
+      DB_PASS: ${DB_PASS}
+`
+
+func serviceNAS(t *testing.T, compose string) *deployNAS {
+	nas := &deployNAS{t: t, project: "web", share: "/docker/web", compose: compose,
+		images:   map[string]string{"omni/api:latest": fullID("aaaaaaaaaaaa"), "postgres:16": fullID("eeeeeeeeeeee")},
+		untagged: map[string]string{}, containers: map[string]*fakeContainer{},
+		files: map[string][]byte{"/docker/web/.env": []byte("API_KEY=key-one\nDB_PASS=hunter2\n")}}
+	nas.build()
+	return nas
+}
+
+// captured runs f and returns what it printed to stdout and stderr.
+func captured(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errOut := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = w, w
+	done := make(chan string)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	f()
+	os.Stdout, os.Stderr = out, errOut
+	w.Close()
+	return <-done
+}
+
+func TestServiceDeployReplacesOnlyThatContainer(t *testing.T) {
+	nas := serviceNAS(t, twoServices)
+	client := deployClient(t, nas)
+	db := nas.containers["db"]
+	tarPath := saveTarFor(t, "bbbbbbbbbbbb", "omni/api:latest")
+	var code int
+	quietly(t, func() {
+		code, _ = projectDeploy(client, options{name: "web", service: "api", images: []string{tarPath}, yes: true, timeout: time.Minute})
+	})
+	if code != 0 {
+		t.Fatalf("code %d; calls %v", code, nas.calls)
+	}
+	if nas.containers["db"] != db {
+		t.Error("db's container was replaced; only api's should be")
+	}
+	if nas.containers["api"].imageID != fullID("bbbbbbbbbbbb") {
+		t.Errorf("api runs %s", nas.containers["api"].imageID)
+	}
+	if nas.indexOf("SYNO.Docker.Project.clean_stream") >= 0 {
+		t.Error("the project was taken down; only api should go")
+	}
+	if fmt.Sprint(nas.deleted) != "[aaaaaaaaaaaa]" {
+		t.Errorf("deleted %v, want api's old image", nas.deleted)
+	}
+}
+
+func TestServiceDeployBlocksOnDriftWithoutPrintingSecrets(t *testing.T) {
+	nas := serviceNAS(t, twoServices)
+	client := deployClient(t, nas)
+	nas.files["/docker/web/.env"] = []byte("API_KEY=key-one\nDB_PASS=changed-secret\n") // db would be recreated
+	tarPath := saveTarFor(t, "bbbbbbbbbbbb", "omni/api:latest")
+	nas.calls = nil
+	var code int
+	out := captured(t, func() {
+		code, _ = projectDeploy(client, options{name: "web", service: "api", images: []string{tarPath}, yes: true, timeout: time.Minute})
+	})
+	if code != 1 || !strings.Contains(out, "BLOCKED: db's environment no longer matches compose/.env for DB_PASS") {
+		t.Errorf("code %d, output:\n%s", code, out)
+	}
+	for _, secret := range []string{"hunter2", "changed-secret", "key-one"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("printed a secret value %q", secret)
+		}
+	}
+	for _, c := range nas.calls {
+		if !strings.HasSuffix(c, ".list") && !strings.HasSuffix(c, ".get") && !strings.HasSuffix(c, ".list_share") &&
+			!strings.HasSuffix(c, ".download") {
+			t.Errorf("made a changing call %s", c)
+		}
+	}
+}
+
+func TestServiceDeployBlocksWhenAnotherServiceDependsOnIt(t *testing.T) {
+	compose := strings.Replace(twoServices, "    container_name: db\n", "    container_name: db\n    depends_on: [api]\n", 1)
+	nas := serviceNAS(t, compose)
+	client := deployClient(t, nas)
+	tarPath := saveTarFor(t, "bbbbbbbbbbbb", "omni/api:latest")
+	var code int
+	out := captured(t, func() {
+		code, _ = projectDeploy(client, options{name: "web", service: "api", images: []string{tarPath}, yes: true, timeout: time.Minute})
+	})
+	if code != 1 || !strings.Contains(out, "db depends on api") {
+		t.Errorf("code %d, output:\n%s", code, out)
+	}
 }

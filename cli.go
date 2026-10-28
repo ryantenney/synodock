@@ -79,6 +79,7 @@ func deployFlags(deploy bool) func(fs *pflag.FlagSet, o *options) {
 		fs.StringVar(&o.user, "user", "", "the registry account, for --pull (default: registry_user in the profile)")
 		fs.StringVar(&o.file, "compose", "", "a new compose file for the project")
 		fs.StringVar(&o.folder, "images-folder", "", "the NAS folder for tars (default: <project folder>/images)")
+		fs.StringVar(&o.service, "service", "", "replace only this service's container (one --pull or --image); the rest keeps running")
 		fs.BoolVar(&o.keepOld, "keep-old-images", false, "don't delete the images the deploy replaces")
 		fs.DurationVar(&o.timeout, "timeout", 10*time.Minute, "how long to wait for the containers to be healthy")
 		if deploy {

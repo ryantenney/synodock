@@ -48,3 +48,11 @@ func ValidateProfile(profile []byte) error {
 	}
 	return nil
 }
+
+// ContainerDelete removes a container. preserve_profile=false leaves no Container Manager
+// profile under its name, so a project build creates it afresh under its real name.
+func (c *Client) ContainerDelete(name string) error {
+	_, err := c.Call("SYNO.Docker.Container", "delete", 1, Params{
+		"name": JS(name), "force": "false", "preserve_profile": "false"})
+	return err
+}

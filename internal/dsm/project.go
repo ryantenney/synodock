@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -351,4 +352,63 @@ func (c *Client) ProjectLog(id string) (string, error) {
 func (c *Client) ProjectDelete(id string) error {
 	_, err := c.Call("SYNO.Docker.Project", "delete", 1, Params{"id": JS(id)})
 	return err
+}
+
+// ServiceContainer is one of a project's containers with what a single-service deploy
+// compares: its compose service, image id and environment. The environment holds secrets;
+// it's for comparing in memory, never for printing.
+type ServiceContainer struct {
+	Name   string `json:"Name"`
+	Image  string `json:"Image"` // the image id it runs
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+		Env    []string          `json:"Env"`
+	} `json:"Config"`
+	State struct {
+		Status string `json:"Status"`
+	} `json:"State"`
+}
+
+// Service is the compose service the container belongs to.
+func (sc *ServiceContainer) Service() string { return sc.Config.Labels["com.docker.compose.service"] }
+
+// BareName is the container's name without docker's leading slash.
+func (sc *ServiceContainer) BareName() string { return strings.TrimPrefix(sc.Name, "/") }
+
+// ProjectServices is a project's containers, with their environment, by compose service.
+func (c *Client) ProjectServices(id string) (map[string]*ServiceContainer, error) {
+	var data struct {
+		Containers []ServiceContainer `json:"containers"`
+	}
+	if err := c.CallInto(&data, "SYNO.Docker.Project", "get", 1, Params{"id": JS(id)}); err != nil {
+		return nil, err
+	}
+	out := map[string]*ServiceContainer{}
+	for i := range data.Containers {
+		out[data.Containers[i].Service()] = &data.Containers[i]
+	}
+	return out, nil
+}
+
+// FSGet reads a file from the NAS. FileStation answers a missing file with a JSON
+// error, which comes back as one.
+func (c *Client) FSGet(path string) ([]byte, error) {
+	params := url.Values{"api": {"SYNO.FileStation.Download"}, "version": {"2"}, "method": {"download"},
+		"path": {JS([]string{path})}, "mode": {"download"}}
+	resp, err := c.request(c.ctx, params, nil, "", 0, true)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		var env envelope
+		if json.Unmarshal(body, &env) == nil && !env.Success && len(env.Error) > 0 {
+			return nil, &Error{Msg: fmt.Sprintf("reading %s failed: %s", path, env.Error), Code: env.code()}
+		}
+	}
+	return body, nil
 }

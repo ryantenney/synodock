@@ -34,9 +34,11 @@ type deployTar struct {
 // happens while the project is still up, so the downtime is only clean, compose update,
 // build and the health wait. Old images are deleted only once the project is healthy.
 //
-// Not here yet, against dsm.py: pulls from the homelab registry (which checks digests
-// against that registry's own API) and single-service deploys.
+// With --service, only that service's container is replaced (serviceDeploy).
 func projectDeploy(client *dsm.Client, o options) (int, error) {
+	if o.service != "" {
+		return serviceDeploy(client, o)
+	}
 	p, err := client.ProjectByName(o.name)
 	if err != nil {
 		return 0, err
