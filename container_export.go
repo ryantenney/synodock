@@ -18,7 +18,7 @@ func containerExport(client *dsm.Client, o options) error {
 		_, err := os.Stdout.Write(data)
 		return err
 	}
-	if err := os.WriteFile(o.output, data, 0o600); err != nil {
+	if err := writePrivate(o.output, data); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (%d bytes, the NAS calls it %s); it includes environment variables, which may be secrets\n",

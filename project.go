@@ -60,7 +60,7 @@ func projectConfig(client *dsm.Client, o options) error {
 		return err
 	}
 	if o.outFile != "" {
-		return os.WriteFile(o.outFile, []byte(p.Content), 0o644)
+		return writePrivate(o.outFile, []byte(p.Content)) // a compose file can hold secrets inline
 	}
 	fmt.Print(p.Content)
 	return nil
@@ -179,7 +179,7 @@ func projectRemove(client *dsm.Client, o options) error {
 		return dsm.Errorf("%s is %s; take it down first (synodock project down %s)", p.Name, p.Status, p.Name)
 	}
 	if !o.force {
-		if err := confirmTyped(fmt.Sprintf("This deletes %s with its containers and all its data.", p.Name), p.Name); err != nil {
+		if err := confirmTyped(fmt.Sprintf("This deletes project %s and its containers (its folder %s stays; named volumes may go).", p.Name, p.SharePath), p.Name); err != nil {
 			return err
 		}
 	}

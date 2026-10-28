@@ -93,13 +93,19 @@ func (c *Client) ImageUpload(tarPath, folder string) (string, error) {
 	}
 	moved := ""
 	if names[name] {
+		// Move the current tar aside first, so if anything fails the rollback copy (the
+		// current tar, or the old .prev) is still there.
+		aside := name + ".rotating"
+		if err := c.FSRename(folder+"/"+name, aside); err != nil {
+			return "", err
+		}
 		if names[prev] {
 			if err := c.FSDelete(folder + "/" + prev); err != nil {
-				return "", err
+				return "", Errorf("%v; the current tar is kept as %s/%s", err, folder, aside)
 			}
 		}
-		if err := c.FSRename(folder+"/"+name, prev); err != nil {
-			return "", err
+		if err := c.FSRename(folder+"/"+aside, prev); err != nil {
+			return "", Errorf("%v; the current tar is kept as %s/%s", err, folder, aside)
 		}
 		moved = folder + "/" + prev
 	}

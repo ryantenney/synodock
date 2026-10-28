@@ -3,6 +3,7 @@ package dsm
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -64,7 +65,7 @@ func RegistryImageID(registryURL, repo, tag, user, password string) (string, err
 			}
 		}
 		if digest == "" {
-			return "", nil
+			return "", Errorf("%s:%s is in %s, but has no linux/amd64 image, which the NAS needs", repo, tag, base.Host)
 		}
 		if manifest, err = get(digest); err != nil || manifest == nil {
 			return "", err
@@ -72,6 +73,9 @@ func RegistryImageID(registryURL, repo, tag, user, password string) (string, err
 	}
 	cfg, _ := manifest["config"].(map[string]any)
 	digest, _ := cfg["digest"].(string)
+	if digest == "" {
+		return "", Errorf("%s:%s in %s has a manifest without a config digest", repo, tag, base.Host)
+	}
 	return ShortID(digest), nil
 }
 
@@ -97,6 +101,9 @@ func (c *Client) Registry(url, user string) (*RegistryAuth, error) {
 		return nil, Errorf("registry %q: want its URL, like https://registry.example.com", r.URL)
 	}
 	r.URL, r.Host = strings.TrimRight(r.URL, "/"), u.Host
+	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		fmt.Fprintf(os.Stderr, "warning: %s is plain http, so the registry password goes over the network unencrypted\n", r.URL)
+	}
 	if r.Password = os.Getenv(RegistryPasswordEnv); r.Password == "" && c.Config.RegistryPasswordCommand != "" {
 		if r.Password, err = c.secrets.run(c.ctx, "registry_password_command", c.Config.RegistryPasswordCommand); err != nil {
 			return nil, err

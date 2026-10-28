@@ -46,12 +46,14 @@ func containerUpdate(client *dsm.Client, o options) error {
 	// memory and auto-restart, and nothing else: the command is kept whatever the profile
 	// says. Read the settings back, so a command that didn't take is an error, not a success.
 	var want struct {
+		Name  string `json:"name"`
 		CmdV2 string `json:"cmd_v2"`
 	}
 	if err := json.Unmarshal(profile, &want); err != nil {
 		return err
 	}
-	stored, _, err := client.ContainerSettings(o.name)
+	// The profile's name can rename it, so read it back by that name.
+	stored, _, err := client.ContainerSettings(want.Name)
 	if err != nil {
 		return err
 	}

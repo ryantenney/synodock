@@ -815,6 +815,18 @@ func (c *Client) ImageDeleteID(id string) error {
 // It returns the bytes and the file name the NAS gives them. A JSON answer is an error
 // envelope, and comes back as one.
 func (c *Client) Download(api, method string, version int, params Params) ([]byte, string, error) {
+	data, name, err := c.download(api, method, version, params)
+	var dsmErr *Error
+	if errors.As(err, &dsmErr) && (dsmErr.Code == 106 || dsmErr.Code == 119) {
+		if err := c.relogin(c.SID()); err != nil {
+			return nil, "", err
+		}
+		return c.download(api, method, version, params)
+	}
+	return data, name, err
+}
+
+func (c *Client) download(api, method string, version int, params Params) ([]byte, string, error) {
 	all := url.Values{"api": {api}, "method": {method}, "version": {strconv.Itoa(version)}}
 	for k, v := range params {
 		all.Set(k, v)

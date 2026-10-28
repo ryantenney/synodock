@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -73,5 +74,25 @@ func TestImageRmTakesIDsOnly(t *testing.T) {
 		if !imageID.MatchString(id) {
 			t.Errorf("%q: not taken as an id", id)
 		}
+	}
+}
+
+func TestWritePrivateTightensAnExistingFile(t *testing.T) {
+	path := t.TempDir() + "/export.json"
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivate(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, want 0600", info.Mode().Perm())
+	}
+	if data, _ := os.ReadFile(path); string(data) != "new" {
+		t.Errorf("content %q", data)
 	}
 }

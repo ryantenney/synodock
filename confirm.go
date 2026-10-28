@@ -24,3 +24,21 @@ func confirmTyped(warning, name string) error {
 	}
 	return nil
 }
+
+// writePrivate writes data to path readable only by this user, an existing file included:
+// os.WriteFile would keep an older file's mode, and exports can hold secrets.
+func writePrivate(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}

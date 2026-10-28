@@ -69,7 +69,13 @@ func imagePrune(client *dsm.Client, o options) error {
 	if err := client.ImagePrune(); err != nil {
 		return err
 	}
-	fmt.Printf("pruned %d unused images\n", len(unused))
+	// Count what went, rather than trusting the list above: Container Manager decides
+	// for itself what's unused.
+	after, err := client.Images()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pruned %d images (%d were listed as unused)\n", len(images)-len(after), len(unused))
 	return nil
 }
 

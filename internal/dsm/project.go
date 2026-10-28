@@ -265,10 +265,7 @@ func (c *Client) CreateProject(name, sharePath, content string, note func(string
 		return nil, err
 	}
 	if len(existing) == 0 {
-		if err := c.FSPutBytes(nil, ".keep", sharePath, true, true); err != nil {
-			return nil, err
-		}
-		if existing, err = c.FSNames(sharePath); err != nil {
+		if err := c.FSMkdirAll(sharePath); err != nil { // an existing empty folder is fine
 			return nil, err
 		}
 	}
@@ -348,8 +345,9 @@ func (c *Client) ProjectLog(id string) (string, error) {
 	return out, err
 }
 
-// ProjectDelete removes a project and its containers. Container Manager's own confirmation
-// warns that the project's data goes too; the API takes no option to keep any of it.
+// ProjectDelete removes a project and its containers. Container Manager's confirmation
+// warns that the project's data goes too, but tested, the folder under the share path
+// (compose file, backups, bind-mounted data) stays; named volumes weren't tested.
 func (c *Client) ProjectDelete(id string) error {
 	_, err := c.Call("SYNO.Docker.Project", "delete", 1, Params{"id": JS(id)})
 	return err
