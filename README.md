@@ -258,7 +258,9 @@ The socket is mode 0600, and nothing listens on the network. Supported: `ps`,
 `inspect`, `start`, `stop`, `restart`, `kill`, `rm`, `logs` (`-f` by polling),
 `stats`, `top` (PID, %CPU, %MEM, RSS, STIME and CMD; no ps options), `images`,
 `image inspect`, `rmi`, `load`, `pull` (Docker Hub), `network ls`, `volume ls`,
-`events` (polled every 2 s), `exec` (`-i`, `-t`, `-e`, `-w`, `-d`), `version`, `info`.
+`events` (polled every 2 s), `exec` (`-i`, `-t`, `-e`, `-w`, `-d`), `cp` (both
+ways, `-a`; through exec, so the container must be running and have `stat` and `tar`,
+and copying in needs synodock-agent), `version`, `info`.
 Everything else answers 501. TUIs like
 [lazydocker](https://github.com/jesseduffield/lazydocker) work against it, its Stats
 and Top tabs included (`DOCKER_HOST=unix://$HOME/.cache/synodock/docker.sock
