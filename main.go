@@ -42,6 +42,7 @@ import (
 const version = "0.1.0"
 
 type options struct {
+	cpSrc, cpDst string
 	sel          dsm.Selection
 	cmd          string
 	use          string
@@ -215,6 +216,8 @@ func dispatch(ctx context.Context, client *dsm.Client, o options) (int, error) {
 		return registryCommand(client, o)
 	case "container exec":
 		return terminal.Run(ctx, client, o.name, o.argv, o.exec)
+	case "container cp":
+		return 0, containerCopy(ctx, client, &o)
 
 	case "serve":
 		return 0, serve(ctx, client, o, listeners)

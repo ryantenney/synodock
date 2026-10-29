@@ -30,7 +30,7 @@ const (
 // D or R record's bytes: the relay can split one record into several pty reads and
 // reorder them, and pieces of hex in the wrong order still look like a record; the
 // checksum tells the right order from a wrong one.
-var record = regexp.MustCompile(`^\x1e([DRESZV]) (\d+) (\d+) ([0-9a-f]*) ?(\d*)\r?\n$`)
+var record = regexp.MustCompile(`^\x1e([DRESZVN]) (\d+) (\d+) ([0-9a-f]*) ?(\d*)\r?\n$`)
 
 // AgentPath is where the framing script looks for synodock-agent, which takes over the
 // exec when it's there (see package wire): mount it into a container read-only.
@@ -94,7 +94,8 @@ fi
 unset B U
 `
 
-var framedBody = `stty -echo -opost 2>/dev/null
+var framedBody = `if [ "$SD_STDIN" = 1 ]; then printf '\036N 0 0 \n'; exit 125; fi
+stty -echo -opost 2>/dev/null
 if ! command -v od >/dev/null || ! command -v awk >/dev/null || ! command -v dd >/dev/null; then
   echo "synodock exec: the container has no od, awk or dd (use --raw)"; exit 127; fi
 case $(printf x | LC_ALL=C dd bs=1 count=1 2>&1 >/dev/null) in *"records in"*) ;; *)
@@ -207,6 +208,9 @@ type Options struct {
 	Gzip        bool   // framed: compress each chunk in the container
 	User        string // run as this user (docker exec -u); not with Raw
 	AgentArch   string // framed: send synodock-agent for this arch along (SendAgentFor)
+	// FramedStdin: framed, and stdin to come (PumpFramedInput); synodock-agent carries
+	// it, so without one the script stops before the command (ErrNoAgent).
+	FramedStdin bool
 }
 
 // CommandFor is the command line for Terminal's "create".
@@ -229,13 +233,17 @@ func CommandFor(argv []string, o Options) string {
 		if AgentDefault() {
 			agent = "SD_AGENT=1"
 		}
+		env := []string{"env", gz, agent}
+		if o.FramedStdin {
+			env = append(env, "SD_STDIN=1")
+		}
 		script := framed
 		if b64 := agentbin.Base64(o.AgentArch); b64 != "" && AgentDefault() {
 			// In the script, not the environment, so the command never sees it; base64
 			// has no quote to escape. About 75 KB, under Linux's 128 KiB per argument.
 			script = mounted + "B='" + b64 + "' U=" + agentbin.Uname(o.AgentArch) + "\n" + sent + framedBody
 		}
-		return Join(append([]string{"env", gz, agent, "sh", "-c", script, "sh"}, argv...))
+		return Join(append(append(env, "sh", "-c", script, "sh"), argv...))
 	}
 	return wrap(argv, o.Interactive, o.Stdin)
 }
@@ -385,7 +393,7 @@ func (d *deframer) feed(text string) (*frame, error) {
 	case 'S':
 		d.status, d.hasStatus = n, true
 		return &frame{kind: kind, n: n}, nil
-	case 'Z', 'V':
+	case 'Z', 'V', 'N':
 		return &frame{kind: kind, n: n}, nil
 	}
 	if seq != d.seq {
@@ -531,9 +539,19 @@ const (
 	Stderr = 2
 )
 
+// ErrNoAgent is PumpFramedInput's when the container has no synodock-agent to take
+// stdin: the script stopped before running the command.
+var ErrNoAgent = errors.New("no synodock-agent in the container to take stdin")
+
 // PumpFramed writes the output in order, each piece to the stream it came from, and
 // returns the exit status. Cancelling ctx sends ^C and returns ctx's error.
 func PumpFramed(ctx context.Context, s *Session, write func(stream int, data []byte) error) (int, error) {
+	return PumpFramedInput(ctx, s, nil, write)
+}
+
+// PumpFramedInput is PumpFramed with stdin sent to the command (from a command line
+// with FramedStdin), through synodock-agent; ErrNoAgent where there isn't one.
+func PumpFramedInput(ctx context.Context, s *Session, stdin io.Reader, write func(stream int, data []byte) error) (int, error) {
 	d := &deframer{}
 	gzipped := false
 	gz := map[int]*gunzip{} // one decompressor per stream: each sends its own gzip members
@@ -572,13 +590,23 @@ func PumpFramed(ctx context.Context, s *Session, write func(stream int, data []b
 		}
 		switch rec.kind {
 		case 'V': // synodock-agent took over: go ahead, then read its records
-			if rec.n != 2 {
-				return 0, dsm.Errorf("%s: synodock-agent speaks protocol %d, this synodock 2", s.Container, rec.n)
+			if rec.n != 2 && rec.n != 3 {
+				return 0, dsm.Errorf("%s: synodock-agent speaks protocol %d, this synodock 2 and 3", s.Container, rec.n)
 			}
-			if err := s.Send("z\n"); err != nil { // we take C records
+			goAhead := "z" // we take C records
+			if stdin != nil {
+				if rec.n < 3 {
+					_ = s.Send("\x03")
+					return 0, dsm.Errorf("%s: this synodock-agent is too old to take stdin (protocol %d)", s.Container, rec.n)
+				}
+				goAhead += "i"
+			}
+			if err := s.Send(goAhead + "\n"); err != nil {
 				return 0, err
 			}
-			return pumpAgent(ctx, s, write)
+			return pumpAgent(ctx, s, write, stdin)
+		case 'N': // stdin, and no agent to take it: the command didn't run
+			return 0, ErrNoAgent
 		case 'Z':
 			gzipped = true
 		case 'D', 'R':

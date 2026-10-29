@@ -17,6 +17,14 @@
 //! carry each stream as one gzip stream instead, flushed after every read so slow output
 //! stays live. X carries the exit status. A ^C byte on the tty interrupts the command.
 //!
+//! With a go-ahead that says "i", the command's stdin comes from synodock, in records the
+//! other way: I (data) and E (end of input), each line as above, stream 0. Each is taken
+//! only in order and with its CRC right; K records back say how far: "<w> <a>", where
+//! every input record below w is in the command's stdin pipe (synodock keeps IN_WINDOW
+//! beyond that in flight) and every one below a has arrived, plus " n" when one arrived
+//! out of order or damaged, so synodock sends again from a. Without it, stdin is
+//! /dev/null.
+//!
 //! ```text
 //! synodock-agent run COMMAND [ARG]...
 //! ```
@@ -37,7 +45,9 @@ const MAX_PAYLOAD: usize = 768; // wire.MaxPayload
 #[cfg(feature = "gzip")]
 const ZREAD: usize = 16 << 10; // a read to compress: a few records once compressed
 const EXIT_WAIT_MS: i64 = 30000; // how long the exit status may take to be acknowledged
-const HELLO: &[u8] = b"\x1eV 0 2 \n";
+const HELLO: &[u8] = b"\x1eV 0 3 \n"; // protocol 3: 2, and stdin
+const IN_WINDOW: usize = 8; // input records synodock may have in flight (wire.go's InWindow)
+const IN_CAP: usize = IN_WINDOW * MAX_PAYLOAD; // input taken but not yet in the pipe
 const USAGE: &[u8] = b"usage: synodock-agent run COMMAND [ARG]...\n";
 
 /// Output waiting for room in the window holds one read's worth, raw or compressed;
@@ -230,6 +240,215 @@ impl Tx {
     }
 }
 
+/// unbase64 decodes standard base64 (with padding) into out; None if it isn't.
+fn unbase64(src: &[u8], out: &mut [u8]) -> Option<usize> {
+    if src.len() % 4 != 0 {
+        return None;
+    }
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut n = 0;
+    for (i, q) in src.chunks(4).enumerate() {
+        let last = i == src.len() / 4 - 1;
+        let pad = if last { q.iter().rev().take_while(|&&c| c == b'=').count() } else { 0 };
+        if pad > 2 {
+            return None;
+        }
+        let mut v = 0u32;
+        for &c in &q[..4 - pad] {
+            v = v << 6 | val(c)?;
+        }
+        v <<= 6 * pad as u32;
+        let bytes = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+        let k = 3 - pad;
+        out.get_mut(n..n + k)?.copy_from_slice(&bytes[..k]);
+        n += k;
+    }
+    Some(n)
+}
+
+/// parse_int is a non-negative decimal, or None.
+fn parse_int(s: &[u8]) -> Option<i32> {
+    if s.is_empty() || s.len() > 9 || !s.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(s.iter().fold(0, |v, &d| v * 10 + (d - b'0') as i32))
+}
+
+/// Input is the command's stdin, from synodock's I and E records.
+struct Input {
+    fd: c_int,              // the pipe to the command's stdin; -1 once closed
+    next: i32,              // the next record to take
+    done: i32,              // every record below this is in the pipe
+    ends: [u64; IN_WINDOW], // a taken record's end, in bytes taken (by seq % IN_WINDOW)
+    taken: u64,             // bytes taken
+    written: u64,           // bytes in the pipe (or dropped, once the command closed it)
+    eof_at: i32,            // the E record's seq, once taken; -1 before
+    buf: [u8; IN_CAP],      // taken, not yet in the pipe: buf[off..len]
+    off: usize,
+    len: usize,
+    sent_w: i32, // the last K's w and a
+    sent_a: i32,
+    nack_at: i32,  // a nack was sent for this next; -1: none yet
+    nack_got: i32, // the record that arrived out of order and brought it
+    need_nack: bool,
+}
+
+/// Taken is what became of an input record.
+enum Taken {
+    Ok,
+    Gap(i32), // this one arrived, with one before it missing
+    Bad,      // damaged
+}
+
+impl Input {
+    /// take handles one input record line (without its newline). Something missing or
+    /// damaged brings a nack, once per place: what synodock had in flight then arrives
+    /// out of order too. Once it's sending again from here, a record out of order no
+    /// later than the one that brought the nack means it's lost one again.
+    fn take(&mut self, l: &[u8], crc: &Crc) {
+        match self.parse(l, crc) {
+            Taken::Ok => {}
+            Taken::Gap(seq) => {
+                if self.nack_at != self.next || seq <= self.nack_got {
+                    self.need_nack = true;
+                    self.nack_got = seq;
+                }
+            }
+            Taken::Bad => {
+                if self.nack_at != self.next {
+                    self.need_nack = true;
+                    self.nack_got = i32::MAX;
+                }
+            }
+        }
+    }
+
+    fn parse(&mut self, l: &[u8], crc: &Crc) -> Taken {
+        // \x1e<kind> <seq> <stream> <len> <base64> <crc>
+        if l.len() < 2 {
+            return Taken::Bad;
+        }
+        let mut f = [&l[0..0]; 6];
+        let mut it = l[1..].split(|&c| c == b' ');
+        for x in &mut f {
+            let Some(v) = it.next() else { return Taken::Bad };
+            *x = v;
+        }
+        if it.next().is_some() || f[0].len() != 1 || f[5].len() != 8 {
+            return Taken::Bad;
+        }
+        let (Some(seq), Some(_), Some(n)) = (parse_int(f[1]), parse_int(f[2]), parse_int(f[3])) else {
+            return Taken::Bad;
+        };
+        if n as usize != f[4].len() {
+            return Taken::Bad;
+        }
+        let head = 1 + f[0].len() + 1 + f[1].len() + 1 + f[2].len() + 1; // "<kind> <seq> <stream> "
+        let want = crc.update(crc.update(0, &l[1..head]), f[4]);
+        let mut got = 0u32;
+        for &c in f[5] {
+            let d = match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                _ => return Taken::Bad,
+            };
+            got = got << 4 | d as u32;
+        }
+        if got != want {
+            return Taken::Bad;
+        }
+        if seq < self.next || self.eof_at >= 0 {
+            return Taken::Ok; // sent again before our K got there; already taken
+        }
+        if seq > self.next {
+            return Taken::Gap(seq); // one before it went missing: ask for it again
+        }
+        match f[0][0] {
+            b'E' => self.eof_at = seq,
+            b'I' => {
+                if self.len + f[4].len() / 4 * 3 > IN_CAP {
+                    self.buf.copy_within(self.off..self.len, 0);
+                    self.len -= self.off;
+                    self.off = 0;
+                }
+                let Some(k) = unbase64(f[4], &mut self.buf[self.len..]) else { return Taken::Bad };
+                self.len += k;
+                self.taken += k as u64;
+            }
+            _ => return Taken::Bad,
+        }
+        self.ends[seq as usize % IN_WINDOW] = self.taken;
+        self.next = seq + 1;
+        self.nack_at = -1;
+        self.nack_got = i32::MAX;
+        Taken::Ok
+    }
+
+    /// pump writes what's waiting into the pipe, as far as it takes it now, and closes it
+    /// after the end of input.
+    fn pump(&mut self) {
+        if self.fd >= 0 && self.off < self.len {
+            // SAFETY: buf[off..len] is valid; fd is our pipe, non-blocking.
+            let w = unsafe { libc::write(self.fd, self.buf[self.off..].as_ptr().cast(), self.len - self.off) };
+            if w > 0 {
+                self.off += w as usize;
+                self.written += w as u64;
+            } else if w < 0 && errno() != libc::EAGAIN && errno() != libc::EINTR {
+                self.close(); // the command closed its stdin (EPIPE): the rest goes nowhere
+            }
+        }
+        if self.fd < 0 {
+            self.written = self.taken;
+            self.off = self.len;
+        }
+        if self.off == self.len {
+            self.off = 0;
+            self.len = 0;
+        }
+        while self.done < self.next && self.ends[self.done as usize % IN_WINDOW] <= self.written {
+            self.done += 1;
+        }
+        if self.eof_at >= 0 && self.done > self.eof_at && self.fd >= 0 {
+            self.close();
+        }
+    }
+
+    fn close(&mut self) {
+        if self.fd >= 0 {
+            // SAFETY: plain syscall on our pipe.
+            unsafe { libc::close(self.fd) };
+            self.fd = -1;
+        }
+    }
+
+    /// k is the K record to send now, if there's news.
+    fn k(&mut self, o: &mut Out) -> bool {
+        if self.done == self.sent_w && self.next == self.sent_a && !self.need_nack {
+            return false;
+        }
+        o.int(self.done as i64);
+        o.byte(b' ');
+        o.int(self.next as i64);
+        if self.need_nack {
+            o.put(b" n");
+            self.nack_at = self.next;
+            self.need_nack = false;
+        }
+        self.sent_w = self.done;
+        self.sent_a = self.next;
+        true
+    }
+}
+
 /// Gz is one output stream's gzip stream, started at its first output.
 #[cfg(feature = "gzip")]
 struct Gz {
@@ -243,8 +462,10 @@ struct Agent {
     acked: i32,     // every record below this has arrived
     tty_open: bool, // synodock is still there
     child: pid_t,
-    line: [u8; 32], // a tty line in progress
+    line: [u8; LINE_CAP], // a tty line in progress
     line_len: usize,
+    line_bad: bool, // it outgrew line: dropped up to its newline
+    input: Option<Input>,
     pend: [u8; PEND_CAP], // output waiting for room in the window
     pend_len: usize,
     pend_off: usize,
@@ -255,7 +476,8 @@ struct Agent {
 }
 
 impl Agent {
-    /// on_tty takes synodock's "A<n>" lines; a ^C byte interrupts the command.
+    /// on_tty takes synodock's "A<n>" lines and input records; a ^C byte interrupts the
+    /// command.
     fn on_tty(&mut self, buf: &[u8]) {
         for &c in buf {
             if c == 3 {
@@ -265,25 +487,44 @@ impl Agent {
                 }
                 continue;
             }
+            if c == 0x1e && self.line_len > 0 {
+                self.end_line(); // a record's mark: whatever came before it is a line of its own
+            }
             if c != b'\n' && c != b'\r' {
-                if self.line_len < self.line.len() - 1 {
+                if self.line_len < self.line.len() {
                     self.line[self.line_len] = c;
                     self.line_len += 1;
+                } else {
+                    self.line_bad = true;
                 }
                 continue;
             }
-            let l = &self.line[..self.line_len];
-            if l.len() > 1 && l[0] == b'A' && l[1..].iter().all(u8::is_ascii_digit) {
-                let v = l[1..].iter().fold(0i32, |v, &d| v.saturating_mul(10).saturating_add((d - b'0') as i32));
-                self.acked = self.acked.max(v);
-            }
-            self.line_len = 0;
+            self.end_line();
         }
+    }
+
+    fn end_line(&mut self) {
+        let l = &self.line[..self.line_len];
+        if self.line_bad {
+            if let Some(i) = &mut self.input {
+                i.take(b"", &self.tx.crc); // damaged: ask again
+            }
+        } else if l.len() > 1 && l[0] == b'A' && l[1..].iter().all(u8::is_ascii_digit) {
+            let v = l[1..].iter().fold(0i32, |v, &d| v.saturating_mul(10).saturating_add((d - b'0') as i32));
+            self.acked = self.acked.max(v);
+        } else if l.first() == Some(&0x1e) {
+            if let Some(i) = &mut self.input {
+                i.take(l, &self.tx.crc);
+                i.pump();
+            }
+        }
+        self.line_len = 0;
+        self.line_bad = false;
     }
 
     /// tty_read takes what's on the tty, once poll has said there's something.
     fn tty_read(&mut self) {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 4096];
         let n = read(0, &mut buf);
         if n > 0 {
             self.on_tty(&buf[..n as usize]);
@@ -309,8 +550,19 @@ impl Agent {
         self.tx.seq - self.acked < WINDOW
     }
 
-    /// flush sends what's waiting while the window has room; true when nothing is left.
+    /// flush sends what's waiting while the window has room, input's K first; true when
+    /// nothing is left.
     fn flush(&mut self) -> bool {
+        if self.room() {
+            if let Some(i) = &mut self.input {
+                let mut k = [0u8; 32];
+                let mut o = Out { b: &mut k, n: 0 };
+                if i.k(&mut o) {
+                    let n = o.n;
+                    self.tx.send(b'K', 0, &k[..n]);
+                }
+            }
+        }
         while self.pend_off < self.pend_len && self.room() {
             let n = (self.pend_len - self.pend_off).min(MAX_PAYLOAD);
             self.tx.send(self.pend_kind, self.pend_stream, &self.pend[self.pend_off..self.pend_off + n]);
@@ -498,7 +750,8 @@ fn command_env() -> *const *mut c_char {
         for i in 0..n {
             let e = *environ.add(i);
             let s = cstr(e);
-            if !s.starts_with(b"SD_GZIP=") && !s.starts_with(b"SD_AGENT=") && !s.starts_with(b"SD_AGENT_UNLINK=") {
+            let ours = [&b"SD_GZIP="[..], b"SD_AGENT=", b"SD_AGENT_UNLINK=", b"SD_STDIN="];
+            if !ours.iter().any(|p| s.starts_with(p)) {
                 *env.add(j) = e;
                 j += 1;
             }
@@ -507,16 +760,17 @@ fn command_env() -> *const *mut c_char {
     }
 }
 
-/// spawn starts the command (argv, NULL-terminated): stdin /dev/null, stdout and stderr
-/// to pipes[1] and pipes[2], no signals blocked, and the ones a shell would reset at
-/// their defaults. It returns posix_spawnp's error.
-fn spawn(argv: *const *const c_char, child: &mut pid_t, pipes: &mut [c_int; 3]) -> c_int {
+/// spawn starts the command (argv, NULL-terminated): stdin a pipe (pipes[0], ours to
+/// write, non-blocking) with stdin, else /dev/null; stdout and stderr to pipes[1] and
+/// pipes[2]; no signals blocked, and the ones a shell would reset at their defaults. It
+/// returns posix_spawnp's error.
+fn spawn(argv: *const *const c_char, child: &mut pid_t, pipes: &mut [c_int; 3], stdin: bool) -> c_int {
     let mut fds = [[-1 as c_int; 2]; 3];
     // SAFETY: libc calls on live locals; argv and the env are NULL-terminated arrays of
     // C strings.
     unsafe {
-        for f in &mut fds[1..] {
-            if libc::pipe2(f.as_mut_ptr(), libc::O_CLOEXEC) < 0 {
+        for (s, f) in fds.iter_mut().enumerate() {
+            if (s > 0 || stdin) && libc::pipe2(f.as_mut_ptr(), libc::O_CLOEXEC) < 0 {
                 return errno();
             }
         }
@@ -524,7 +778,11 @@ fn spawn(argv: *const *const c_char, child: &mut pid_t, pipes: &mut [c_int; 3]) 
         let mut attr = MaybeUninit::<libc::posix_spawnattr_t>::uninit();
         let (fa, attr) = (fa.as_mut_ptr(), attr.as_mut_ptr());
         libc::posix_spawn_file_actions_init(fa);
-        libc::posix_spawn_file_actions_addopen(fa, 0, c"/dev/null".as_ptr(), libc::O_RDONLY, 0);
+        if stdin {
+            libc::posix_spawn_file_actions_adddup2(fa, fds[0][0], 0);
+        } else {
+            libc::posix_spawn_file_actions_addopen(fa, 0, c"/dev/null".as_ptr(), libc::O_RDONLY, 0);
+        }
         libc::posix_spawn_file_actions_adddup2(fa, fds[1][1], 1);
         libc::posix_spawn_file_actions_adddup2(fa, fds[2][1], 2);
         libc::posix_spawnattr_init(attr);
@@ -547,6 +805,15 @@ fn spawn(argv: *const *const c_char, child: &mut pid_t, pipes: &mut [c_int; 3]) 
             if err != 0 {
                 libc::close(fds[s][0]);
                 pipes[s] = -1;
+            }
+        }
+        if stdin {
+            libc::close(fds[0][0]);
+            pipes[0] = fds[0][1];
+            libc::fcntl(pipes[0], libc::F_SETFL, libc::O_NONBLOCK);
+            if err != 0 {
+                libc::close(fds[0][1]);
+                pipes[0] = -1;
             }
         }
         if err != 0 {
@@ -594,16 +861,17 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
         let gz = unsafe { libc::getenv(c"SD_GZIP".as_ptr()) };
         !gz.is_null() && cstr(gz) == b"1" && go[..go_len].contains(&b'z')
     };
-    #[cfg(not(feature = "gzip"))]
-    let _ = go_len;
+    let stdin = go[..go_len].contains(&b'i');
 
     let mut a = Agent {
         tx: Tx { seq: 0, crc: Crc::new(), line: [0; LINE_CAP] },
         acked: 0,
         tty_open: true,
         child: -1,
-        line: [0; 32],
+        line: [0; LINE_CAP],
         line_len: 0,
+        line_bad: false,
+        input: None,
         pend: [0; PEND_CAP],
         pend_len: 0,
         pend_off: 0,
@@ -616,7 +884,26 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
     // SAFETY: argv + first is still NULL-terminated.
     let cmd = unsafe { argv.add(first) };
     let mut pipes = [-1 as c_int; 3];
-    let err = spawn(cmd, &mut a.child, &mut pipes);
+    let err = spawn(cmd, &mut a.child, &mut pipes, stdin);
+    if stdin && err == 0 {
+        a.input = Some(Input {
+            fd: pipes[0],
+            next: 0,
+            done: 0,
+            ends: [0; IN_WINDOW],
+            taken: 0,
+            written: 0,
+            eof_at: -1,
+            buf: [0; IN_CAP],
+            off: 0,
+            len: 0,
+            sent_w: 0,
+            sent_a: 0,
+            nack_at: -1,
+            nack_got: i32::MAX,
+            need_nack: false,
+        });
+    }
     if err != 0 {
         let mut msg = [0u8; 511];
         let mut o = Out { b: &mut msg, n: 0 };
@@ -641,11 +928,18 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
             a.read_tty(-1);
             continue;
         }
-        let mut p = [libc::pollfd { fd: -1, events: libc::POLLIN, revents: 0 }; 3];
+        let mut p = [libc::pollfd { fd: -1, events: libc::POLLIN, revents: 0 }; 4];
         let mut np = 0;
         for fd in [pipes[1], pipes[2], if a.tty_open { 0 } else { -1 }] {
             if fd >= 0 {
                 p[np].fd = fd;
+                np += 1;
+            }
+        }
+        // the command's stdin, while input waits for room in its pipe
+        if let Some(i) = &a.input {
+            if i.fd >= 0 && i.off < i.len {
+                p[np] = libc::pollfd { fd: i.fd, events: libc::POLLOUT, revents: 0 };
                 np += 1;
             }
         }
@@ -662,6 +956,12 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
             }
             if q.fd == 0 {
                 a.tty_read();
+                continue;
+            }
+            if q.events == libc::POLLOUT {
+                if let Some(i) = &mut a.input {
+                    i.pump();
+                }
                 continue;
             }
             let s = if q.fd == pipes[1] { 1 } else { 2 };

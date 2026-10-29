@@ -19,7 +19,13 @@
 // gzip stream, in pieces; the agent sends C or D, not both), X = the command exited (payload: its
 // status; seq: the number of records before it). synodock acknowledges with "A<n>\n"
 // on the tty: every record below n has arrived. Its go-ahead after the hello says what it
-// can take: "z", C records.
+// can take: "z", C records; and "i", that stdin follows (protocol 3).
+//
+// Stdin goes the other way in the same lines, stream 0: I (data) and E (end of input).
+// The agent takes them only in order and whole, and answers with K records, "<w> <a>":
+// every input record below w is in the command's stdin pipe (so InWindow more may be
+// sent), every one below a has arrived; with " n" when one came out of order or
+// damaged, so synodock sends again from a.
 package wire
 
 import (
@@ -41,6 +47,10 @@ const (
 	// Hello is what the agent writes first, in the framing script's record syntax, so a
 	// synodock reading that format knows to switch: kind V, protocol 2.
 	Hello = "\x1eV 0 2 \n"
+
+	// InWindow is how many input records may be on their way beyond what the agent has
+	// written to the command (synodock-agent's IN_WINDOW).
+	InWindow = 8
 )
 
 // Record is one decoded record.

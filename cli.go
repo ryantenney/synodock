@@ -65,9 +65,10 @@ var shortcuts = map[string]string{
 	"logs": "container logs",
 	"top":  "container top",
 	"exec": "container exec",
+	"cp":   "container cp",
 }
 
-var shortcutOrder = []string{"ps", "logs", "top", "exec"}
+var shortcutOrder = []string{"ps", "logs", "top", "exec", "cp"}
 
 // deployFlags are project deploy's flags; plan has the same ones without -y and --dry-run,
 // since it only ever plans.
@@ -191,6 +192,17 @@ var commands = []*command{
 			}
 			o.exec.TTY = o.exec.TTY && o.exec.Stdin
 			o.exec.Gzip = terminal.GzipDefault() && !o.noGzip
+			return true
+		}},
+	{group: "container", name: "cp", args: "SRC DEST",
+		short: "copy a file or directory between here and a container (one of them CONTAINER:PATH)",
+		note: "As docker cp: into an existing directory under its own name, else to that path. Into a container it goes " +
+			"through synodock-agent, which synodock sends along; directories need tar in the image.",
+		positional: func(o *options, rest []string) bool {
+			if len(rest) != 2 {
+				return false
+			}
+			o.cpSrc, o.cpDst = rest[0], rest[1]
 			return true
 		}},
 

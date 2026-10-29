@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,17 +40,18 @@ func Run(ctx context.Context, client *dsm.Client, container string, argv []strin
 			_, _, err := PumpUnframed(ctx, s, writeString, nil, false, false, true)
 			return 0, err
 		}
-		return PumpFramed(ctx, s, func(stream int, b []byte) error {
-			out := os.Stdout
-			if stream == Stderr {
-				out = os.Stderr
-			}
-			_, err := out.Write(b)
-			return err
-		})
+		return PumpFramed(ctx, s, writeStream)
 	}
 
 	interactive := o.TTY && term.IsTerminal(int(os.Stdin.Fd()))
+	if o.Stdin && !interactive && !o.Raw && AgentDefault() {
+		// Piped stdin goes framed, through synodock-agent: in order, whole, and paced to
+		// the command. Without an agent the command hasn't run; it goes unframed below.
+		code, err := runFramedStdin(ctx, client, container, argv, o, rows, cols)
+		if !errors.Is(err, ErrNoAgent) {
+			return code, err
+		}
+	}
 	stdin := o.Stdin || interactive
 	if !interactive {
 		fmt.Fprintln(os.Stderr, "synodock exec: unframed mode, output may arrive out of order")
@@ -89,6 +91,47 @@ func Run(ctx context.Context, client *dsm.Client, container string, argv []strin
 		return 255, nil
 	}
 	return code, nil
+}
+
+// Exec runs argv in container, framed, with output to stdout and stderr, and returns its
+// exit status. stdin (if not nil) goes to it through synodock-agent (ErrNoAgent where
+// there isn't one; the command hasn't run). user is -u's, or "".
+func Exec(ctx context.Context, client *dsm.Client, container string, argv []string, user string,
+	stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	o := Options{Gzip: GzipDefault(), User: user, AgentArch: SendAgentFor(client), FramedStdin: stdin != nil}
+	s, err := Open(ctx, client, container, CommandFor(argv, o), 50, 200)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	return PumpFramedInput(ctx, s, stdin, func(stream int, b []byte) error {
+		w := stdout
+		if stream == Stderr {
+			w = stderr
+		}
+		_, err := w.Write(b)
+		return err
+	})
+}
+
+func runFramedStdin(ctx context.Context, client *dsm.Client, container string, argv []string, o RunOptions, rows, cols int) (int, error) {
+	command := CommandFor(argv, Options{Gzip: o.Gzip, User: o.User, AgentArch: SendAgentFor(client), FramedStdin: true})
+	s, err := Open(ctx, client, container, command, rows, cols)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	return PumpFramedInput(ctx, s, os.Stdin, writeStream)
+}
+
+// writeStream writes framed output to our stdout or stderr, as it came.
+func writeStream(stream int, b []byte) error {
+	out := os.Stdout
+	if stream == Stderr {
+		out = os.Stderr
+	}
+	_, err := out.Write(b)
+	return err
 }
 
 func writeString(text string) error {

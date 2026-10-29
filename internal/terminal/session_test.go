@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +40,9 @@ type fakeTerminal struct {
 	bin     string // a directory whose sh is dash
 	data    string // shared with the container
 	reorder bool   // swap consecutive pty reads, as the relay can
+	mangle  bool   // lose, swap and damage input records (synodock-agent's stdin)
+	inputs  int    // input records seen, for mangle
+	held    string // an input record mangle holds back, to go after the next
 }
 
 func (f *fakeTerminal) command(command string) *exec.Cmd {
@@ -165,15 +171,47 @@ func (f *fakeTerminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var text string
 			_ = json.Unmarshal(msg[1], &text)
 			if ptmx != nil {
-				_, _ = ptmx.Write([]byte(text))
+				for _, t := range f.mangleInput(text) {
+					_, _ = ptmx.Write([]byte(t))
+				}
 			}
 		}
 	}
 }
 
+// mangleInput is what the pty gets for a data message: with mangle, of input records
+// (they start with the mark) every 7th is lost, every 5th goes after the one following
+// it, and every 11th has a byte changed.
+func (f *fakeTerminal) mangleInput(text string) []string {
+	if !f.mangle || !strings.HasPrefix(text, "\x1e") {
+		return []string{text}
+	}
+	f.inputs++
+	switch n := f.inputs; {
+	case n%7 == 0:
+		return nil
+	case n%5 == 0 && f.held == "":
+		f.held = text
+		return nil
+	case n%11 == 0:
+		b := []byte(text)
+		b[len(b)/2] ^= 1
+		text = string(b)
+	}
+	out := []string{text}
+	if f.held != "" {
+		out, f.held = append(out, f.held), ""
+	}
+	return out
+}
+
 func fakeClient(t *testing.T) (*dsm.Client, string) { return fakeClientWith(t, false) }
 
 func fakeClientWith(t *testing.T, reorder bool) (*dsm.Client, string) {
+	return fakeClientFor(t, &fakeTerminal{reorder: reorder})
+}
+
+func fakeClientFor(t *testing.T, f *fakeTerminal) (*dsm.Client, string) {
 	t.Helper()
 	bin := t.TempDir()
 	dash, err := exec.LookPath("dash")
@@ -187,7 +225,8 @@ func fakeClientWith(t *testing.T, reorder bool) (*dsm.Client, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(&fakeTerminal{execs: map[string]string{}, bin: bin, data: data, reorder: reorder})
+	f.execs, f.bin, f.data = map[string]string{}, bin, data
+	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return dsm.NewClient(context.Background(), &dsm.Config{URL: srv.URL, User: "test"}), data
 }
@@ -219,6 +258,43 @@ func runFramedStreams(t *testing.T, client *dsm.Client, argv []string, o Options
 		t.Fatal(err)
 	}
 	return out.Bytes(), errOut.Bytes(), code
+}
+
+// runFramedInput is runFramedStreams with stdin, and PumpFramedInput's error.
+func runFramedInput(t *testing.T, client *dsm.Client, argv []string, o Options, stdin io.Reader) ([]byte, []byte, int, error) {
+	t.Helper()
+	o.FramedStdin = true
+	s, err := Open(context.Background(), client, "ctr", CommandFor(argv, o), 24, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out, errOut bytes.Buffer
+	code, err := PumpFramedInput(context.Background(), s, stdin, func(stream int, b []byte) error {
+		if stream == Stderr {
+			errOut.Write(b)
+		} else {
+			out.Write(b)
+		}
+		return nil
+	})
+	return out.Bytes(), errOut.Bytes(), code, err
+}
+
+// Without synodock-agent, stdin can't go framed: the script stops before the command.
+func TestFramedStdinNeedsTheAgent(t *testing.T) {
+	if os.Getenv("SYNODOCK_TEST_AGENT") != "" {
+		t.Skip("an agent is mounted")
+	}
+	client, dir := fakeClient(t)
+	marker := filepath.Join(dir, "ran")
+	_, _, _, err := runFramedInput(t, client, []string{"touch", marker}, Options{}, strings.NewReader("x"))
+	if !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("err %v, want ErrNoAgent", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the command ran")
+	}
 }
 
 func TestFramedThroughPty(t *testing.T) {
@@ -439,5 +515,48 @@ func TestAgentSentWithTheExec(t *testing.T) {
 		Options{AgentArch: arch})
 	if code != 127 || strings.HasPrefix(string(errOut), "synodock exec:") {
 		t.Errorf("exit %d, stderr %q", code, errOut)
+	}
+}
+
+// Stdin through synodock-agent: whole and in order, paced to the command, ending with
+// EOF; and a command that stops reading early doesn't hang it.
+func TestAgentTakesStdin(t *testing.T) {
+	o := Options{Gzip: true}
+	switch {
+	case os.Getenv("SYNODOCK_TEST_AGENT") != "":
+	case os.Getenv("SYNODOCK_TEST_IMAGE") != "":
+		o.AgentArch = runtime.GOARCH
+	default:
+		t.Skip("set SYNODOCK_TEST_IMAGE (and optionally SYNODOCK_TEST_AGENT)")
+	}
+	client, _ := fakeClient(t)
+	data := make([]byte, 1<<20)
+	_, _ = rand.Read(data)
+	sum := sha256.Sum256(data)
+	out, errOut, code, err := runFramedInput(t, client, []string{"sh", "-c", "sha256sum; exit 5"}, o, bytes.NewReader(data))
+	if err != nil || code != 5 || !strings.HasPrefix(string(out), hex.EncodeToString(sum[:])) {
+		t.Errorf("sha256sum: err %v, exit %d, out %q, stderr %q", err, code, out, errOut)
+	}
+	// A slow reader: everything still arrives.
+	out, _, code, err = runFramedInput(t, client, []string{"sh", "-c", "sleep 1; wc -c"}, o, bytes.NewReader(data[:200000]))
+	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "200000" {
+		t.Errorf("slow reader: err %v, exit %d, out %q", err, code, out)
+	}
+	// No input at all.
+	out, _, code, err = runFramedInput(t, client, []string{"wc", "-c"}, o, strings.NewReader(""))
+	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "0" {
+		t.Errorf("empty: err %v, exit %d, out %q", err, code, out)
+	}
+	// Input lost, reordered and damaged on the way: sent again, still whole.
+	mangled, _ := fakeClientFor(t, &fakeTerminal{mangle: true})
+	out, _, code, err = runFramedInput(t, mangled, []string{"sha256sum"}, o, bytes.NewReader(data[:300000]))
+	part := sha256.Sum256(data[:300000])
+	if err != nil || code != 0 || !strings.HasPrefix(string(out), hex.EncodeToString(part[:])) {
+		t.Errorf("mangled: err %v, exit %d, out %q", err, code, out)
+	}
+	// Stops reading after 10 bytes.
+	out, _, code, err = runFramedInput(t, client, []string{"head", "-c", "10"}, o, bytes.NewReader(data))
+	if err != nil || code != 0 || !bytes.Equal(out, data[:10]) {
+		t.Errorf("head: err %v, exit %d, %d bytes", err, code, len(out))
 	}
 }

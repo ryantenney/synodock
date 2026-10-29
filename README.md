@@ -178,6 +178,24 @@ $ synodock --nas home service install       # serve started on demand by launchd
   of order**: the websocket relay on the NAS reorders output that's produced
   quickly. `--raw` runs the command without `sh` and can't report an exit status.
 
+### Copying files and piping stdin
+
+`synodock exec -i` with stdin piped (not a terminal) sends it through synodock-agent,
+whole and in order, so binary data survives and the exit status comes back:
+
+```console
+$ synodock exec -i web -- sha256sum < backup.tar
+```
+
+`synodock cp` copies a file or directory between here and a container, as `docker cp`
+does: into an existing directory under its own name, else to that path. Directories
+need `tar` in the image; copying in needs the agent.
+
+```console
+$ synodock cp ./nginx.conf web:/etc/nginx/conf.d/
+$ synodock cp web:/var/log/nginx ./logs
+```
+
 ### synodock-agent: faster exec
 
 `synodock-agent` is a small static binary (about 55 KB) that runs the command in place of
