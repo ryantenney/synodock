@@ -844,8 +844,12 @@ func (s *server) execStart(w *response, r *http.Request, q query, p []string) er
 	if size[0] > 0 {
 		rows, cols = size[0], size[1]
 	}
+	agentArch := ""
+	if framed {
+		agentArch = terminal.SendAgentFor(s.adapter.dsm)
+	}
 	command := terminal.CommandFor(ex.argv(), terminal.Options{Unframed: !framed, Interactive: tty, Stdin: stdin,
-		Gzip: terminal.GzipDefault(), User: ex.config.User})
+		Gzip: terminal.GzipDefault(), User: ex.config.User, AgentArch: agentArch})
 	if !framed && !tty {
 		_ = write([]byte("synodock exec: unframed mode (-i), output may arrive out of order\n"), 2)
 	}

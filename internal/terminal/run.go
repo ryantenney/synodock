@@ -28,7 +28,8 @@ func Run(ctx context.Context, client *dsm.Client, container string, argv []strin
 	}
 	rows, cols := terminalSize()
 	if o.Detach || !(o.Stdin || o.TTY || o.Raw) {
-		command := CommandFor(argv, Options{Raw: o.Raw, Detach: o.Detach, Gzip: o.Gzip, User: o.User})
+		command := CommandFor(argv, Options{Raw: o.Raw, Detach: o.Detach, Gzip: o.Gzip, User: o.User,
+			AgentArch: SendAgentFor(client)})
 		s, err := Open(ctx, client, container, command, rows, cols)
 		if err != nil {
 			return 0, err

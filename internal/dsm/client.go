@@ -236,6 +236,7 @@ type Client struct {
 	mu    sync.Mutex
 	sid   string
 	token string
+	arch  string // CPUArch's answer
 
 	loginMu sync.Mutex // one login at a time, so expired sessions log in again once
 }

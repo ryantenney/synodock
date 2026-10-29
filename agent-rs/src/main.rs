@@ -498,7 +498,7 @@ fn command_env() -> *const *mut c_char {
         for i in 0..n {
             let e = *environ.add(i);
             let s = cstr(e);
-            if !s.starts_with(b"SD_GZIP=") && !s.starts_with(b"SD_AGENT=") {
+            if !s.starts_with(b"SD_GZIP=") && !s.starts_with(b"SD_AGENT=") && !s.starts_with(b"SD_AGENT_UNLINK=") {
                 *env.add(j) = e;
                 j += 1;
             }
@@ -571,6 +571,15 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
     if arg(first).is_null() {
         write_all(2, USAGE);
         return 2;
+    }
+    // Sent with the exec rather than mounted: remove our file now, so nothing is left
+    // behind however the exec ends (Linux keeps a running binary until it exits).
+    // SAFETY: getenv's result is NULL or a C string in environ; unlink takes it as is.
+    unsafe {
+        let path = libc::getenv(c"SD_AGENT_UNLINK".as_ptr());
+        if !path.is_null() && *path != 0 {
+            libc::unlink(path);
+        }
     }
     // SAFETY: plain syscall.
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };

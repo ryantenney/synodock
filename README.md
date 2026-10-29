@@ -178,7 +178,7 @@ $ synodock --nas home service install       # serve started on demand by launchd
   of order**: the websocket relay on the NAS reorders output that's produced
   quickly. `--raw` runs the command without `sh` and can't report an exit status.
 
-### synodock-agent: faster exec, where you can mount it
+### synodock-agent: faster exec
 
 `synodock-agent` is a small static binary (about 55 KB) that runs the command in place of
 the shell framing script when it's in the container at `/opt/synodock/agent`. It keeps
@@ -188,9 +188,18 @@ instead of 2.7 s, both including about 1 s of login), and it needs nothing in th
 (no `sh`, `dd`, `od` or `awk`). It compresses output as the script does with gzip,
 unless `--no-gzip` or `SYNODOCK_GZIP=0`. A container without it works as before.
 
+synodock carries it (`internal/agentbin`, for amd64 and arm64) and sends it with each
+exec, inside the command: about 75 KB, costing about 0.05 s. The script writes it to
+`/tmp`, runs it, and it removes its own file as it starts. Where it can't (no `base64`,
+no writable `/tmp`, `/tmp` mounted noexec, an arch it doesn't match), the script runs
+the command as before. A mounted `/opt/synodock/agent` comes first, and needs nothing
+written into the container; `SYNODOCK_AGENT=mount` uses only that, `SYNODOCK_AGENT=0`
+neither. The NAS's arch comes from DSM's system info (its CPU vendor).
+
 It's in `agent-rs/`: Rust, `no_std` over libc, static with musl, built in a
-`rust:alpine` container. `GZIP=0` leaves compression out (about 34 KB; it then never
-compresses, and synodock takes that):
+`rust:alpine` container. `agent-rs/embed.sh` rebuilds the embedded copies (a test fails
+when they're older than the source). `GZIP=0` leaves compression out (about 34 KB; it
+then never compresses, and synodock takes that):
 
 ```console
 $ agent-rs/build.sh           # build/synodock-agent-rs-{amd64,arm64}
@@ -203,8 +212,8 @@ The Go version in `cmd/synodock-agent` (about 2 MB, same protocol) is the fallba
 $ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o synodock-agent ./cmd/synodock-agent
 ```
 
-Put it in a NAS folder and mount it read-only into the services you exec into, in their
-compose file; updating it is replacing one file:
+To mount it instead (nothing written into the container), put it in a NAS folder and
+mount it read-only into the services you exec into, in their compose file:
 
 ```yaml
     volumes:

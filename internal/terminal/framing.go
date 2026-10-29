@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ryantenney/synodock/internal/agentbin"
 	"github.com/ryantenney/synodock/internal/dsm"
 )
 
@@ -71,8 +72,29 @@ END { for (s = 1; s <= 2; s++) if (b[s] != "") emit(s, length(b[s]) / 2); printf
 // arrives, as with docker exec. mawk reads pipes in blocks unless -W interactive;
 // busybox awk ignores that with a warning, so it's only passed when awk is silent. The
 // tools' stderr stays off the tty: one stray line there jams the framing.
-var framed = `if [ "$SD_AGENT" = 1 ] && [ -x ` + AgentPath + ` ]; then exec ` + AgentPath + ` run "$@"; fi
-stty -echo -opost 2>/dev/null
+var framed = mounted + framedBody
+
+// mounted hands over to synodock-agent where it's mounted.
+const mounted = `if [ "$SD_AGENT" = 1 ] && [ -x ` + AgentPath + ` ]; then exec ` + AgentPath + ` run "$@"; fi
+`
+
+// sent hands over to synodock-agent sent with the exec, in $B (base64) for an arch whose
+// uname -m is $U: written to /tmp, tried (no arguments: it exits 2 with its usage), and
+// run, removing its own file as it starts. Where it can't (no base64, no /tmp, /tmp
+// noexec, another arch), the script carries on as before. Nothing it runs writes to the
+// tty: one stray line there jams the framing.
+const sent = `if [ "$SD_AGENT" = 1 ] && [ "$(uname -m 2>/dev/null)" = "$U" ]; then
+  f=/tmp/.synodock-agent-$$
+  if (umask 077; printf %s "$B" | base64 -d >"$f") 2>/dev/null && chmod 700 "$f" 2>/dev/null; then
+    "$f" >/dev/null 2>&1
+    if [ $? = 2 ]; then unset B; export SD_AGENT_UNLINK="$f"; exec "$f" run "$@"; fi
+  fi
+  rm -f "$f"
+fi
+unset B U
+`
+
+var framedBody = `stty -echo -opost 2>/dev/null
 if ! command -v od >/dev/null || ! command -v awk >/dev/null || ! command -v dd >/dev/null; then
   echo "synodock exec: the container has no od, awk or dd (use --raw)"; exit 127; fi
 case $(printf x | LC_ALL=C dd bs=1 count=1 2>&1 >/dev/null) in *"records in"*) ;; *)
@@ -184,6 +206,7 @@ type Options struct {
 	Detach      bool
 	Gzip        bool   // framed: compress each chunk in the container
 	User        string // run as this user (docker exec -u); not with Raw
+	AgentArch   string // framed: send synodock-agent for this arch along (SendAgentFor)
 }
 
 // CommandFor is the command line for Terminal's "create".
@@ -206,7 +229,13 @@ func CommandFor(argv []string, o Options) string {
 		if AgentDefault() {
 			agent = "SD_AGENT=1"
 		}
-		return Join(append([]string{"env", gz, agent, "sh", "-c", framed, "sh"}, argv...))
+		script := framed
+		if b64 := agentbin.Base64(o.AgentArch); b64 != "" && AgentDefault() {
+			// In the script, not the environment, so the command never sees it; base64
+			// has no quote to escape. About 75 KB, under Linux's 128 KiB per argument.
+			script = mounted + "B='" + b64 + "' U=" + agentbin.Uname(o.AgentArch) + "\n" + sent + framedBody
+		}
+		return Join(append([]string{"env", gz, agent, "sh", "-c", script, "sh"}, argv...))
 	}
 	return wrap(argv, o.Interactive, o.Stdin)
 }
@@ -214,6 +243,19 @@ func CommandFor(argv []string, o Options) string {
 // AgentDefault says whether to use synodock-agent where a container has it: on unless
 // SYNODOCK_AGENT=0.
 func AgentDefault() bool { return os.Getenv("SYNODOCK_AGENT") != "0" }
+
+// SendAgentFor is the arch to send synodock-agent for with an exec on client's NAS (for
+// Options.AgentArch), "" not to: with SYNODOCK_AGENT=0, or =mount (only a mounted one).
+func SendAgentFor(client *dsm.Client) string {
+	if !AgentDefault() || os.Getenv("SYNODOCK_AGENT") == "mount" {
+		return ""
+	}
+	arch, err := client.CPUArch()
+	if err != nil {
+		return "" // the script, as before
+	}
+	return arch
+}
 
 // GzipDefault says whether to compress framed output: on unless SYNODOCK_GZIP=0.
 // Each chunk is its own gzip member, so it costs no latency; it costs ~0.2s on

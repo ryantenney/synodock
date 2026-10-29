@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -413,5 +414,30 @@ func TestAgentRunsTheCommand(t *testing.T) {
 	out, _, _ := runFramedStreams(t, client, []string{"env"}, Options{Gzip: true})
 	if strings.Contains(string(out), "SD_") {
 		t.Errorf("env: %q", out)
+	}
+}
+
+// Sent with the exec (no mount), synodock-agent runs the command and leaves nothing in
+// /tmp; without base64 the script runs it as before.
+func TestAgentSentWithTheExec(t *testing.T) {
+	if os.Getenv("SYNODOCK_TEST_IMAGE") == "" || os.Getenv("SYNODOCK_TEST_AGENT") != "" {
+		t.Skip("set SYNODOCK_TEST_IMAGE (and not SYNODOCK_TEST_AGENT, which mounts one)")
+	}
+	arch := runtime.GOARCH // Docker runs images for the host's arch
+	client, _ := fakeClient(t)
+	_, errOut, code := runFramedStreams(t, client, []string{"no-such-command"}, Options{Gzip: true, AgentArch: arch})
+	if code != 127 || !strings.HasPrefix(string(errOut), "synodock exec: no-such-command:") {
+		t.Errorf("exit %d, stderr %q: not the agent", code, errOut)
+	}
+	out, _, code := runFramedStreams(t, client, []string{"sh", "-c", "seq 20000; ls -A /tmp; env | grep -c ^SD_; exit 3"},
+		Options{Gzip: true, AgentArch: arch})
+	if code != 3 || !strings.HasSuffix(string(out), "19999\n20000\n0\n") {
+		t.Errorf("exit %d, output ends %q", code, out[max(0, len(out)-40):])
+	}
+	// Without base64 (PATH without it), the script.
+	_, errOut, code = runFramedStreams(t, client, []string{"sh", "-c", "PATH=/nowhere exec no-such-command"},
+		Options{AgentArch: arch})
+	if code != 127 || strings.HasPrefix(string(errOut), "synodock exec:") {
+		t.Errorf("exit %d, stderr %q", code, errOut)
 	}
 }
