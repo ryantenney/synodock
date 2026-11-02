@@ -243,33 +243,38 @@ type Session struct {
 }
 
 // Open creates the exec and attaches to it; the command starts now.
-func Open(ctx context.Context, client *dsm.Client, container, command string, rows, cols int) (s *Session, err error) {
-	s = &Session{Container: container}
-	defer func() {
-		if err != nil {
-			s.Close()
-		}
-	}()
-	if s.monitor, err = dial(client, container, "monitor"); err != nil {
+// If it fails partway, what it opened is closed (and an exec it made, deleted).
+func Open(ctx context.Context, client *dsm.Client, container, command string, rows, cols int) (*Session, error) {
+	s := &Session{Container: container}
+	if err := s.open(ctx, client, command, rows, cols); err != nil {
+		s.Close()
 		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Session) open(ctx context.Context, client *dsm.Client, command string, rows, cols int) (err error) {
+	container := s.Container
+	if s.monitor, err = dial(client, container, "monitor"); err != nil {
+		return err
 	}
 	args, err := s.monitor.wait(ctx, "list")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	before := ttyIDs(args)
 	if err := s.monitor.send("create", command); err != nil {
-		return nil, err
+		return err
 	}
 	if args, err = s.monitor.wait(ctx, "create"); err != nil {
-		return nil, err
+		return err
 	}
 	if len(args) == 0 || !truthy(args[0]) {
-		return nil, dsm.Errorf("Container Manager refused to create an exec in %s", container)
+		return dsm.Errorf("Container Manager refused to create an exec in %s (is it running?)", container)
 	}
 	for s.ttyID == "" {
 		if args, err = s.monitor.wait(ctx, "list"); err != nil {
-			return nil, err
+			return err
 		}
 		var fresh []string
 		for id := range ttyIDs(args) {
@@ -278,29 +283,29 @@ func Open(ctx context.Context, client *dsm.Client, container, command string, ro
 			}
 		}
 		if len(fresh) > 1 {
-			return nil, dsm.Errorf("several new terminals appeared in %s at once; not guessing which is ours", container)
+			return dsm.Errorf("several new terminals appeared in %s at once; not guessing which is ours", container)
 		}
 		if len(fresh) == 1 {
 			if !execID.MatchString(fresh[0]) { // e.g. the container's own console
-				return nil, dsm.Errorf("unexpected terminal id %q", fresh[0])
+				return dsm.Errorf("unexpected terminal id %q", fresh[0])
 			}
 			s.ttyID = fresh[0]
 		}
 	}
 	if s.term, err = dial(client, container, "terminal"); err != nil {
-		return nil, err
+		return err
 	}
 	if err := s.term.send("attach", s.ttyID, false); err != nil {
-		return nil, err
+		return err
 	}
 	if args, err = s.term.wait(ctx, "attach"); err != nil {
-		return nil, err
+		return err
 	}
 	if code := intArg(args); code != attachOK {
-		return nil, dsm.Errorf("attach to the new exec in %s failed (%d)", container, code)
+		return dsm.Errorf("attach to the new exec in %s failed (%d)", container, code)
 	}
 	if err := s.Resize(rows, cols); err != nil {
-		return nil, err
+		return err
 	}
 	// Keep reading the monitor socket (more "list"s come), so pings are answered
 	// and its reader isn't stuck.
@@ -308,7 +313,7 @@ func Open(ctx context.Context, client *dsm.Client, container, command string, ro
 		for range msgs {
 		}
 	}(s.monitor.msgs)
-	return s, nil
+	return nil
 }
 
 // ttyIDs are the ids in a "list": [id, title, id, title, ...].
@@ -327,7 +332,11 @@ func ttyIDs(args []json.RawMessage) map[string]bool {
 	return ids
 }
 
+// Close is safe on a nil or partly opened Session.
 func (s *Session) Close() {
+	if s == nil {
+		return
+	}
 	if s.term != nil {
 		s.term.close()
 	}

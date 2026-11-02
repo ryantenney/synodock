@@ -43,6 +43,10 @@ type fakeTerminal struct {
 	mangle  bool   // lose, swap and damage input records (synodock-agent's stdin)
 	inputs  int    // input records seen, for mangle
 	held    string // an input record mangle holds back, to go after the next
+
+	refuseCreate bool // answer "create" with false, as DSM does for a stopped container
+	monitors     int  // monitor sockets entered
+	closed       int  // sockets that went away
 }
 
 func (f *fakeTerminal) command(command string) *exec.Cmd {
@@ -64,6 +68,11 @@ func (f *fakeTerminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+	defer func() {
+		f.mu.Lock()
+		f.closed++
+		f.mu.Unlock()
+	}()
 	var wmu sync.Mutex
 	send := func(v ...any) {
 		wmu.Lock()
@@ -84,11 +93,18 @@ func (f *fakeTerminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var role string
 			_ = json.Unmarshal(msg[2], &role)
 			if role == "monitor" {
+				f.mu.Lock()
+				f.monitors++
+				f.mu.Unlock()
 				send("list", []string{"ctr", "ctr"})
 			}
 		case "create":
 			var command string
 			_ = json.Unmarshal(msg[1], &command)
+			if f.refuseCreate {
+				send("create", false)
+				continue
+			}
 			b := make([]byte, 32)
 			_, _ = rand.Read(b)
 			id := hex.EncodeToString(b)
@@ -559,4 +575,46 @@ func TestAgentTakesStdin(t *testing.T) {
 	if err != nil || code != 0 || !bytes.Equal(out, data[:10]) {
 		t.Errorf("head: err %v, exit %d, %d bytes", err, code, len(out))
 	}
+}
+
+// Open failing partway returns its error, with nothing left open; it used to panic,
+// closing a nil Session.
+func TestOpenFails(t *testing.T) {
+	f := &fakeTerminal{refuseCreate: true, execs: map[string]string{}}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	client := dsm.NewClient(context.Background(), &dsm.Config{URL: srv.URL, User: "test"})
+	s, err := Open(context.Background(), client, "ctr", "true", 24, 200)
+	if err == nil || !strings.Contains(err.Error(), "refused to create an exec in ctr") {
+		t.Fatalf("err %v, want the refusal", err)
+	}
+	if s != nil {
+		t.Errorf("got a Session with the error")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.mu.Lock()
+		monitors, closed := f.monitors, f.closed
+		f.mu.Unlock()
+		if monitors == 1 && closed == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("monitor sockets: %d entered, %d closed", monitors, closed)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Nothing to dial (DSM down, or timing out): Open fails before it has a socket.
+func TestOpenUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	client := dsm.NewClient(context.Background(), &dsm.Config{URL: srv.URL, User: "test"})
+	s, err := Open(context.Background(), client, "ctr", "true", 24, 200)
+	if err == nil || s != nil {
+		t.Fatalf("got %v, %v; want an error and no Session", s, err)
+	}
+	var none *Session
+	none.Close()
 }
